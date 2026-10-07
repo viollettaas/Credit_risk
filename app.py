@@ -8,7 +8,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Kredito rizikos stebėsena", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
 DATA_PATH = Path(__file__).with_name("credit_risk_test_data.xlsx")
-BANK_ID = "B001"
+BANK_ID = "B01"
 
 CSS = """
 <style>
@@ -165,7 +165,7 @@ if page=="Vadovybės apžvalga":
     section("Portfelio struktūra ir probleminės zonos")
     c1,c2,c3=st.columns(3)
     with c1:
-        s=latest.groupby("Kredito rizikos etapas",as_index=False).EAD_EUR.sum(); fig=px.donut(s,names="Kredito rizikos etapas",values="EAD_EUR",hole=.62,title="Portfelis pagal kredito rizikos etapą"); st.plotly_chart(style_fig(fig,350),use_container_width=True)
+        s=latest.groupby("Kredito rizikos etapas",as_index=False).EAD_EUR.sum(); fig=px.pie(s,names="Kredito rizikos etapas",values="EAD_EUR",hole=.62,title="Portfelis pagal kredito rizikos etapą"); st.plotly_chart(style_fig(fig,350),use_container_width=True)
     with c2:
         d=latest.groupby("DPD_Bucket",as_index=False).EAD_EUR.sum(); fig=px.bar(d,x="DPD_Bucket",y="EAD_EUR",title="Portfelis pagal mokėjimo vėlavimą",labels={"DPD_Bucket":"Vėlavimo grupė","EAD_EUR":"Kredito pozicija, eurais"}); st.plotly_chart(style_fig(fig,350),use_container_width=True)
     with c3:
