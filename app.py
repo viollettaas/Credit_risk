@@ -7,7 +7,7 @@ import plotly.express as px
 st.set_page_config(page_title='Banko kredito rizikos ataskaita', page_icon='🏦', layout='wide', initial_sidebar_state='expanded')
 
 BASE_DIR = Path(__file__).resolve().parent
-EXPECTED_DATA_FILE = 'credit_risk_test_data.xlsx'
+EXPECTED_DATA_FILE = 'credit_risk_test_data_baltic.xlsx'
 
 CSS = '''
 <style>
@@ -56,7 +56,7 @@ def find_data_file():
 def load_data():
     p=find_data_file()
     if p is None:
-        st.error('Nerastas kredito rizikos duomenų Excel failas. Įkelkite credit_risk_test_data.xlsx į tą patį GitHub projektą kaip app.py.')
+        st.error('Nerastas kredito rizikos duomenų Excel failas. Įkelkite credit_risk_test_data_baltic.xlsx į tą patį GitHub projektą kaip app.py.')
         st.stop()
     xl=pd.ExcelFile(p)
     return {s:pd.read_excel(xl,sheet_name=s) for s in xl.sheet_names}
@@ -129,9 +129,24 @@ def alert(kind,title,text): st.markdown(f'<div class="alert alert-{kind}"><div c
 with st.sidebar:
     st.markdown('<div style="font-size:22px;font-weight:900;margin-bottom:5px">🏦 Kredito rizika</div>',unsafe_allow_html=True)
     st.markdown('<div style="font-size:13px;color:#b8c9df!important;margin-bottom:18px">Vieno banko vadovybės rizikos ataskaita</div>',unsafe_allow_html=True)
-    page=st.radio('Ataskaitos dalis',['Vadovybės apžvalga','Asmens profilis','Portfelio rizika','Rizikos raida ir scenarijai'],label_visibility='collapsed')
+    page=st.radio('Ataskaitos dalis',['Vadovybės apžvalga','Asmens profilis','Portfelis ir klientai','Rizikos raida ir scenarijai'],label_visibility='collapsed')
+    available_countries=sorted([x for x in loans.get('Country',pd.Series(dtype=str)).dropna().astype(str).unique() if x in ['LT','LV','EE']])
+    selected_countries=st.multiselect('Šalys',available_countries,default=available_countries,format_func=lambda x:{'LT':'Lietuva','LV':'Latvija','EE':'Estija'}.get(x,x))
+    if not selected_countries: selected_countries=available_countries
     date_text='Nėra duomenų' if pd.isna(latest_date) else latest_date.strftime('%Y-%m-%d')
     st.markdown(f'<div class="card" style="background:rgba(255,255,255,.055);border-color:rgba(157,190,230,.28);box-shadow:none"><b>Ataskaitos data</b><br><span style="color:#b8c9df">{date_text}</span><br><br><b>Aktyvios paskolos</b><br><span style="color:#b8c9df">{len(latest):,}</span></div>',unsafe_allow_html=True)
+
+# Global country filter for the three Baltic markets.
+if selected_countries:
+    if 'Country' in loans.columns: loans=loans[loans['Country'].isin(selected_countries)].copy()
+    if 'Country' in snap.columns: snap=snap[snap['Country'].isin(selected_countries)].copy()
+    if 'Country' in customers.columns: customers=customers[customers['Country'].isin(selected_countries)].copy()
+    if 'Country' in uw.columns: uw=uw[uw['Country'].isin(selected_countries)].copy()
+    if 'Country' in fin.columns: fin=fin[fin['Customer_ID'].astype(str).isin(customers['Customer_ID'].astype(str))].copy() if 'Customer_ID' in fin.columns else fin
+    if 'Country' in pay.columns: pay=pay[pay['Country'].isin(selected_countries)].copy()
+    if not snap.empty:
+        latest_date=snap['Snapshot_Date'].max() if 'Snapshot_Date' in snap.columns else pd.NaT
+        latest=snap[snap['Snapshot_Date'].eq(latest_date)].copy() if pd.notna(latest_date) else snap.copy()
 
 EAD=float(num(latest,'EAD_EUR').sum())
 stage=num(latest,'IFRS9_Stage')
@@ -175,8 +190,12 @@ elif page=='Asmens profilis':
     st.title('Asmens kredito profilis')
     st.caption('Įveskite kliento kodą ir gaukite aiškų vieno kliento rizikos vaizdą.')
     if customers.empty or 'Customer_ID' not in customers.columns: st.error('Trūksta klientų identifikatoriaus.'); st.stop()
-    cid=st.text_input('Asmens kodas / kliento kodas',value=str(customers.iloc[0]['Customer_ID'])).strip()
-    cust=customers[customers['Customer_ID'].astype(str).eq(cid)]
+    search_default=str(customers.iloc[0].get('Personal_Code',customers.iloc[0]['Customer_ID']))
+    query=st.text_input('Asmens kodas / kliento kodas',value=search_default).strip()
+    mask=customers['Customer_ID'].astype(str).eq(query)
+    if 'Personal_Code' in customers.columns: mask=mask | customers['Personal_Code'].astype(str).eq(query)
+    cust=customers[mask]
+    cid=str(cust.iloc[0]['Customer_ID']) if not cust.empty else query
     if cust.empty: st.warning('Tokio kliento testiniuose duomenyse nėra.'); st.stop()
     row=cust.iloc[0]
     l=loans[loans['Customer_ID'].astype(str).eq(cid)] if 'Customer_ID' in loans.columns else loans.iloc[0:0]
@@ -214,10 +233,39 @@ elif page=='Asmens profilis':
         if 'IFRS9_Stage' in s.columns: tbl['Kredito būklė']=s['IFRS9_Stage'].map(stage_map)
         st.dataframe(tbl,use_container_width=True,hide_index=True)
 
-elif page=='Portfelio rizika':
-    st.title('Portfelio rizika')
-    st.caption('Kur susikaupusi rizika ir kokie paskolų požymiai ją paaiškina?')
+elif page=='Portfelis ir klientai':
+    st.title('Portfelis, klientai ir paskolų suteikimas')
+    st.caption('Kas skolinasi, kada skolinasi, kokio dydžio pradinį įnašą turi ir kuriuose segmentuose kaupiasi rizika?')
     if latest.empty: st.warning('Nėra naujausio portfelio stebėjimo.'); st.stop()
+    question('Kada klientai dažniausiai ima paskolas?','Rodomas naujų paskolų skaičius pagal suteikimo mėnesį. Tai padeda matyti sezoniškumą ir planuoti pardavimų bei rizikos pajėgumus.')
+    if 'Origination_Date' in loans.columns:
+        monthly=loans.dropna(subset=['Origination_Date']).copy(); monthly['Mėnuo']=pd.to_datetime(monthly['Origination_Date']).dt.to_period('M').astype(str)
+        monthly=monthly.groupby('Mėnuo',as_index=False).agg(Naujų_paskolų_skaičius=('Loan_ID','nunique'),Suteikta_suma=('Original_Amount_EUR','sum'))
+        fig=px.bar(monthly,x='Mėnuo',y='Naujų_paskolų_skaičius',hover_data=['Suteikta_suma'])
+        fig.update_xaxes(title='Paskolos suteikimo mėnuo'); fig.update_yaxes(title='Naujų paskolų skaičius')
+        st.plotly_chart(fig_base(fig,340),use_container_width=True)
+    c1,c2=st.columns(2)
+    with c1:
+        question('Kokio amžiaus klientai skolinasi?','Klientų pasiskirstymas pagal amžiaus grupes. Tai parodo, kuri klientų grupė generuoja daugiausia naujo kreditavimo.')
+        if 'Age' in customers.columns:
+            cc=customers.copy(); cc['Amžiaus grupė']=pd.cut(pd.to_numeric(cc['Age'],errors='coerce'),bins=[17,24,34,44,54,64,200],labels=['18–24','25–34','35–44','45–54','55–64','65+'])
+            ag=cc.groupby('Amžiaus grupė',observed=False).size().reset_index(name='Klientų skaičius'); ag['Amžiaus grupė']=ag['Amžiaus grupė'].astype(str)
+            st.plotly_chart(fig_base(px.bar(ag,x='Amžiaus grupė',y='Klientų skaičius'),310),use_container_width=True)
+    with c2:
+        question('Kas dažniau skolinasi – moterys ar vyrai?','Rodomas unikalių paskolų klientų pasiskirstymas pagal lytį.')
+        if 'Gender' in customers.columns:
+            gg=customers.groupby('Gender',as_index=False).size().rename(columns={'size':'Klientų skaičius'})
+            st.plotly_chart(fig_base(px.pie(gg,names='Gender',values='Klientų skaičius',hole=.58),310),use_container_width=True)
+    question('Kokį pradinį įnašą klientai įneša?','Rodoma paskolų su užstatu pradinio įnašo dalis nuo turto pirkimo kainos. Mažesnis pradinis įnašas reiškia mažesnį kliento nuosavą finansinį rezervą.')
+    if 'Down_Payment_Pct' in loans.columns:
+        dp=loans[pd.to_numeric(loans['Down_Payment_Pct'],errors='coerce').gt(0)].copy(); dp['Pradinio įnašo grupė']=pd.cut(pd.to_numeric(dp['Down_Payment_Pct'],errors='coerce'),bins=[0,.1,.15,.2,.25,.3,.4,2],labels=['<10 %','10–15 %','15–20 %','20–25 %','25–30 %','30–40 %','>40 %'],right=False)
+        dpg=dp.groupby('Pradinio įnašo grupė',observed=False).agg(Paskolų_skaičius=('Loan_ID','nunique'),Vidutinė_paskola=('Original_Amount_EUR','mean')).reset_index(); dpg['Pradinio įnašo grupė']=dpg['Pradinio įnašo grupė'].astype(str)
+        st.plotly_chart(fig_base(px.bar(dpg,x='Pradinio įnašo grupė',y='Paskolų_skaičius',hover_data=['Vidutinė_paskola']),330),use_container_width=True)
+    question('Kaip skiriasi trys šalys?','Palyginame portfelio dydį, klientų skaičių ir probleminių paskolų dalį Lietuvoje, Latvijoje ir Estijoje.')
+    if 'Country' in latest.columns:
+        cg=latest.groupby('Country',as_index=False).agg(Paskolų_likutis=('EAD_EUR','sum'),Paskolų_skaičius=('Loan_ID','nunique'),Probleminių_paskolų_dalis=('IFRS9_Stage',lambda x:pd.to_numeric(x,errors='coerce').eq(3).mean()))
+        cg['Šalis']=cg['Country'].map({'LT':'Lietuva','LV':'Latvija','EE':'Estija'}); fig=px.bar(cg,x='Šalis',y='Paskolų_likutis',text='Paskolų_skaičius',color='Probleminių_paskolų_dalis',color_continuous_scale=['#cfe9df','#e39a22','#d14343'])
+        fig.update_coloraxes(colorbar_title='Probleminių paskolų dalis',colorbar_tickformat='.0%'); st.plotly_chart(fig_base(fig,340),use_container_width=True)
     question('Kur rizika didžiausia pagal produktą?','Stulpelio dydis parodo banko pinigų sumą. Spalva parodo probleminių paskolų dalį.')
     if 'Product_Name' in latest.columns:
         g=latest.groupby('Product_Name',as_index=False).agg(Paskolų_likutis=('EAD_EUR','sum'),Probleminių_paskolų_dalis=('IFRS9_Stage',lambda s:(pd.to_numeric(s,errors='coerce')==3).mean()))
