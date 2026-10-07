@@ -261,11 +261,52 @@ elif page=='Portfelis ir klientai':
         dp=loans[pd.to_numeric(loans['Down_Payment_Pct'],errors='coerce').gt(0)].copy(); dp['Pradinio įnašo grupė']=pd.cut(pd.to_numeric(dp['Down_Payment_Pct'],errors='coerce'),bins=[0,.1,.15,.2,.25,.3,.4,2],labels=['<10 %','10–15 %','15–20 %','20–25 %','25–30 %','30–40 %','>40 %'],right=False)
         dpg=dp.groupby('Pradinio įnašo grupė',observed=False).agg(Paskolų_skaičius=('Loan_ID','nunique'),Vidutinė_paskola=('Original_Amount_EUR','mean')).reset_index(); dpg['Pradinio įnašo grupė']=dpg['Pradinio įnašo grupė'].astype(str)
         st.plotly_chart(fig_base(px.bar(dpg,x='Pradinio įnašo grupė',y='Paskolų_skaičius',hover_data=['Vidutinė_paskola']),330),use_container_width=True)
-    question('Kaip skiriasi trys šalys?','Palyginame portfelio dydį, klientų skaičių ir probleminių paskolų dalį Lietuvoje, Latvijoje ir Estijoje.')
+    question('Kaip pasiskirstęs banko portfelis tarp Baltijos šalių?','Rodome, kokią viso banko paskolų portfelio dalį sudaro Lietuva, Latvija ir Estija. Tai padeda iš karto matyti geografinę koncentraciją.')
     if 'Country' in latest.columns:
-        cg=latest.groupby('Country',as_index=False).agg(Paskolų_likutis=('EAD_EUR','sum'),Paskolų_skaičius=('Loan_ID','nunique'),Probleminių_paskolų_dalis=('IFRS9_Stage',lambda x:pd.to_numeric(x,errors='coerce').eq(3).mean()))
-        cg['Šalis']=cg['Country'].map({'LT':'Lietuva','LV':'Latvija','EE':'Estija'}); fig=px.bar(cg,x='Šalis',y='Paskolų_likutis',text='Paskolų_skaičius',color='Probleminių_paskolų_dalis',color_continuous_scale=['#cfe9df','#e39a22','#d14343'])
-        fig.update_coloraxes(colorbar_title='Probleminių paskolų dalis',colorbar_tickformat='.0%'); st.plotly_chart(fig_base(fig,340),use_container_width=True)
+        country_names={'LT':'Lietuva','LV':'Latvija','EE':'Estija'}
+        country_rows=[]
+        for country, part in latest.groupby('Country'):
+            total=float(num(part,'EAD_EUR').sum())
+            stages=pd.to_numeric(part.get('IFRS9_Stage'),errors='coerce')
+            dpd=pd.to_numeric(part.get('Days_Past_Due'),errors='coerce').fillna(0)
+            pd_series=pd.to_numeric(part.get('PD'),errors='coerce') if 'PD' in part.columns else pd.Series(dtype=float)
+            country_rows.append({
+                'Šalis':country_names.get(country,country),
+                'Paskolų likutis':total,
+                'Paskolų skaičius':part['Loan_ID'].nunique() if 'Loan_ID' in part.columns else len(part),
+                'Probleminių paskolų dalis':float((stages==3).mean()),
+                'Padidėjusios rizikos paskolų dalis':float((stages==2).mean()),
+                'Daugiau kaip 90 dienų vėluojančių paskolų dalis':float((dpd>=90).mean()),
+                'Vidutinė įsipareigojimų nevykdymo tikimybė':float(pd_series.mean()) if len(pd_series) else 0.0,
+            })
+        cg=pd.DataFrame(country_rows)
+        total_baltic=cg['Paskolų likutis'].sum()
+        cg['Portfelio dalis']=cg['Paskolų likutis']/total_baltic if total_baltic else 0
+        c_left,c_right=st.columns(2)
+        with c_left:
+            fig=px.bar(cg.sort_values('Paskolų likutis',ascending=False),x='Šalis',y='Paskolų likutis',text='Portfelio dalis',hover_data=['Paskolų skaičius'])
+            fig.update_traces(texttemplate='%{text:.1%}',textposition='outside')
+            fig.update_yaxes(title='Paskolų likutis, eurais')
+            fig.update_xaxes(title='')
+            st.plotly_chart(fig_base(fig,340),use_container_width=True)
+        with c_right:
+            risk_long=cg.melt(id_vars='Šalis',value_vars=['Probleminių paskolų dalis','Padidėjusios rizikos paskolų dalis','Daugiau kaip 90 dienų vėluojančių paskolų dalis'],var_name='Rizikos rodiklis',value_name='Dalis')
+            fig=px.bar(risk_long,x='Šalis',y='Dalis',color='Rizikos rodiklis',barmode='group')
+            fig.update_yaxes(tickformat='.1%',title='Paskolų dalis')
+            fig.update_xaxes(title='')
+            st.plotly_chart(fig_base(fig,340),use_container_width=True)
+        question('Kurios šalies kredito rizika šiuo metu didžiausia?','Šioje lentelėje vienoje vietoje palyginami svarbiausi šalies rizikos rodikliai. Vadovybei svarbu stebėti ne tik lygį, bet ir jo pokytį per laiką.')
+        country_score=cg[['Šalis','Paskolų likutis','Portfelio dalis','Probleminių paskolų dalis','Padidėjusios rizikos paskolų dalis','Daugiau kaip 90 dienų vėluojančių paskolų dalis','Vidutinė įsipareigojimų nevykdymo tikimybė']].copy()
+        percent_cols=['Portfelio dalis','Probleminių paskolų dalis','Padidėjusios rizikos paskolų dalis','Daugiau kaip 90 dienų vėluojančių paskolų dalis','Vidutinė įsipareigojimų nevykdymo tikimybė']
+        country_score[percent_cols]=country_score[percent_cols]*100
+        st.dataframe(country_score,use_container_width=True,hide_index=True,column_config={
+            'Paskolų likutis':st.column_config.NumberColumn(format='%.0f €'),
+            'Portfelio dalis':st.column_config.NumberColumn(format='%.1f%%'),
+            'Probleminių paskolų dalis':st.column_config.NumberColumn(format='%.1f%%'),
+            'Padidėjusios rizikos paskolų dalis':st.column_config.NumberColumn(format='%.1f%%'),
+            'Daugiau kaip 90 dienų vėluojančių paskolų dalis':st.column_config.NumberColumn(format='%.1f%%'),
+            'Vidutinė įsipareigojimų nevykdymo tikimybė':st.column_config.NumberColumn(format='%.2f%%'),
+        })
     question('Kur rizika didžiausia pagal produktą?','Stulpelio dydis parodo banko pinigų sumą. Spalva parodo probleminių paskolų dalį.')
     if 'Product_Name' in latest.columns:
         g=latest.groupby('Product_Name',as_index=False).agg(Paskolų_likutis=('EAD_EUR','sum'),Probleminių_paskolų_dalis=('IFRS9_Stage',lambda s:(pd.to_numeric(s,errors='coerce')==3).mean()))
