@@ -7,7 +7,8 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Banko kredito rizikos ataskaita", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
 
-DATA_PATH = Path(__file__).resolve().parent / "credit_risk_test_data.xlsx"
+BASE_DIR = Path(__file__).resolve().parent
+EXPECTED_DATA_FILE = "credit_risk_test_data.xlsx"
 
 CSS = """
 <style>
@@ -30,12 +31,67 @@ section[data-testid="stSidebar"] [data-testid="stTextInput"] input{color:#061b34
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
+def find_data_file():
+    """Find the test Excel file reliably on Streamlit Cloud and locally."""
+    roots = []
+    for root in [BASE_DIR, Path.cwd()]:
+        if root.exists() and root not in roots:
+            roots.append(root)
+
+    # 1) Exact filename, including project subfolders.
+    for root in roots:
+        exact = root / EXPECTED_DATA_FILE
+        if exact.is_file():
+            return exact
+        for candidate in root.rglob("*.xlsx"):
+            if candidate.name.lower() == EXPECTED_DATA_FILE.lower():
+                return candidate
+
+    # 2) If only one Excel file exists in the project, use it.
+    all_xlsx = []
+    for root in roots:
+        try:
+            all_xlsx.extend([p for p in root.rglob("*.xlsx") if p.is_file() and not p.name.startswith("~$")])
+        except Exception:
+            pass
+    unique = []
+    seen = set()
+    for p in all_xlsx:
+        rp = str(p.resolve())
+        if rp not in seen:
+            seen.add(rp)
+            unique.append(p)
+    if len(unique) == 1:
+        return unique[0]
+
+    return None
+
+
 @st.cache_data
 def load_data():
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"Nerastas duomenų failas: {DATA_PATH.name}")
-    xls = pd.ExcelFile(DATA_PATH)
-    return {s: pd.read_excel(xls, sheet_name=s) for s in xls.sheet_names}
+    data_path = find_data_file()
+    if data_path is None:
+        visible = []
+        for root in [BASE_DIR, Path.cwd()]:
+            try:
+                visible.extend(str(p.relative_to(root)) for p in root.rglob("*.xlsx") if p.is_file())
+            except Exception:
+                pass
+        visible = sorted(set(visible))
+        st.error("Nerastas kredito rizikos duomenų Excel failas.")
+        st.markdown(
+            "**Tikimasi:** `credit_risk_test_data.xlsx`\n\n"
+            "Failas turi būti įkeltas į tą patį GitHub projektą kaip `app.py` arba jo subfolderį.\n\n"
+            f"**Rasti Excel failai:** {', '.join(visible) if visible else 'nerasta nė vieno .xlsx failo'}"
+        )
+        st.stop()
+    try:
+        xls = pd.ExcelFile(data_path)
+        return {s: pd.read_excel(xls, sheet_name=s) for s in xls.sheet_names}
+    except Exception as e:
+        st.error(f"Nepavyko atidaryti duomenų failo `{data_path.name}`.")
+        st.exception(e)
+        st.stop()
 
 D = load_data()
 loans = D.get("Loans", pd.DataFrame()).copy()
