@@ -1,358 +1,266 @@
-# -*- coding: utf-8 -*-
 from pathlib import Path
-import numpy as np
 import pandas as pd
+import numpy as np
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
 
-st.set_page_config(page_title='Kredito rizikos stebėsena', page_icon='🏦', layout='wide', initial_sidebar_state='expanded')
+st.set_page_config(page_title="Banko kredito rizikos ataskaita", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
 
-DATA_PATH = Path(__file__).with_name('credit_risk_test_data.xlsx')
-BANK_ID = 'B01'
+DATA_PATH = Path(__file__).resolve().parent / "credit_risk_test_data.xlsx"
 
-CSS = '''
+CSS = """
 <style>
 .stApp{background:#ffffff}
-.block-container{padding:1.15rem 2rem 2rem;max-width:100%!important}
-section[data-testid="stSidebar"]{background:radial-gradient(circle at top left,#0c356b 0%,#061d3a 38%,#03162d 100%)!important;min-width:350px!important;max-width:350px!important}
-section[data-testid="stSidebar"]>div{padding:16px 18px 24px}
-section[data-testid="stSidebar"] *{color:#ffffff}
-section[data-testid="stSidebar"] input{color:#061b34!important;-webkit-text-fill-color:#061b34!important;background:#fff!important}
-.sidebar-title{font-size:22px;font-weight:900}.sidebar-sub{color:#b8c9df!important;font-size:13px;margin:4px 0 20px}
-.side-card{background:rgba(255,255,255,.055);border:1px solid rgba(157,190,230,.28);border-radius:17px;padding:16px;margin:14px 0 20px}
-.page-title{font-size:30px;font-weight:950;color:#092545;margin-bottom:2px}.page-sub{color:#64748b;font-size:14px;margin-bottom:18px}
-.section{font-size:20px;font-weight:900;color:#0b2a4d;margin:24px 0 4px}.section-sub{color:#64748b;font-size:13px;margin-bottom:12px;line-height:1.45}
-.kpi{background:#fff;border:1px solid #e4eaf2;border-radius:18px;padding:16px 17px;box-shadow:0 9px 26px rgba(3,22,45,.07);min-height:112px}
-.kpi-l{font-size:11px;font-weight:850;color:#64748b;text-transform:uppercase;letter-spacing:.035em}.kpi-v{font-size:27px;font-weight:950;color:#092545;margin-top:5px}.kpi-n{font-size:12px;color:#64748b;margin-top:3px}
-.chart-help{background:#f6f9fd;border:1px solid #e0e8f3;border-left:4px solid #1478ff;border-radius:14px;padding:12px 15px;margin:8px 0 12px;color:#334155;font-size:13px;line-height:1.5}
-.warn{background:#fff8e8;border:1px solid #f5dda3;border-left:4px solid #e8a317;border-radius:14px;padding:14px 16px;margin:8px 0;color:#614715}
-.danger{background:#fff1f1;border:1px solid #f1c5c5;border-left:4px solid #d84a4a;border-radius:14px;padding:14px 16px;margin:8px 0;color:#7d2626}
-.good{background:#eefbf5;border:1px solid #bfe8d5;border-left:4px solid #19a66b;border-radius:14px;padding:14px 16px;margin:8px 0;color:#185c42}
-[data-testid="stDataFrame"]{border:1px solid #e4eaf2;border-radius:14px;overflow:hidden}
-div[data-testid="stPlotlyChart"]{border:1px solid #edf1f6;border-radius:18px;padding:8px;background:#fff;box-shadow:0 6px 20px rgba(3,22,45,.04)}
-.small-note{font-size:12px;color:#64748b}
+.block-container{padding-top:1.1rem;padding-left:2rem;padding-right:2rem;max-width:100%!important}
+section[data-testid="stSidebar"]{background:radial-gradient(circle at top left,#0c356b 0%,#061d3a 35%,#03162d 100%)!important;min-width:330px!important;max-width:330px!important}
+section[data-testid="stSidebar"] *{color:#fff}
+section[data-testid="stSidebar"] [data-testid="stTextInput"] input{color:#061b34!important;background:#fff!important;-webkit-text-fill-color:#061b34!important}
+.card{background:#fff;border:1px solid #e5eaf1;border-radius:17px;padding:18px 20px;box-shadow:0 8px 28px rgba(15,42,75,.07);height:100%}
+.kpi-title{font-size:12px;color:#65758b;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.kpi-value{font-size:28px;font-weight:900;color:#071a33;margin-top:5px}
+.kpi-sub{font-size:13px;color:#65758b;margin-top:5px}
+.kpi-up{color:#d14343;font-weight:800}.kpi-down{color:#14966d;font-weight:800}.kpi-neutral{color:#65758b;font-weight:800}
+.alert{border-radius:15px;padding:14px 16px;margin-bottom:10px;border:1px solid #e5eaf1;background:#fff}
+.alert-red{border-left:5px solid #d14343}.alert-amber{border-left:5px solid #e39a22}.alert-green{border-left:5px solid #14966d}
+.alert-title{font-weight:900;color:#071a33}.alert-text{color:#4c5c70;font-size:14px;line-height:1.45;margin-top:3px}
+.section-title{font-size:22px;font-weight:900;color:#071a33;margin:8px 0 4px}.section-sub{font-size:14px;color:#65758b;margin-bottom:16px}
+.small-note{font-size:12px;color:#728197;margin-top:4px}
 </style>
-'''
+"""
 st.markdown(CSS, unsafe_allow_html=True)
 
-
-def find_data_file():
-    candidates = [DATA_PATH, Path.cwd() / DATA_PATH.name]
-    for p in candidates:
-        if p.exists():
-            return p
-    root = Path(__file__).resolve().parent
-    xs = [p for p in root.glob('*.xlsx') if not p.name.startswith('~$')]
-    preferred = [p for p in xs if 'credit' in p.name.lower()]
-    if preferred:
-        return preferred[0]
-    if len(xs) == 1:
-        return xs[0]
-    return None
-
-
-@st.cache_data(show_spinner=False)
+@st.cache_data
 def load_data():
-    p = find_data_file()
-    if p is None:
-        raise FileNotFoundError('Nerastas credit_risk_test_data.xlsx. Įkelk jį į tą patį GitHub katalogą kaip app.py.')
-    xls = pd.ExcelFile(p)
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(f"Nerastas duomenų failas: {DATA_PATH.name}")
+    xls = pd.ExcelFile(DATA_PATH)
     return {s: pd.read_excel(xls, sheet_name=s) for s in xls.sheet_names}
 
-
 D = load_data()
-loans = D['Loans'].copy()
-snapshots = D['Loan_Snapshot'].copy()
-customers = D['Customers'].copy()
-financials = D['Customer_Financials'].copy()
-payments = D['Payments'].copy()
-collateral = D['Collateral'].copy()
-ratings = D['Risk_Ratings'].copy()
-defaults = D['Default_Events'].copy()
-collections = D['Collections'].copy()
-underwriting = D['Underwriting'].copy()
-events = D['Loan_Events'].copy()
-macro = D['Macro'].copy()
-stress = D['Stress_Scenarios'].copy()
-risk_appetite = D.get('Risk_Appetite', pd.DataFrame())
+loans = D.get("Loans", pd.DataFrame()).copy()
+snap = D.get("Loan_Snapshot", pd.DataFrame()).copy()
+customers = D.get("Customers", pd.DataFrame()).copy()
+fin = D.get("Customer_Financials", pd.DataFrame()).copy()
+pay = D.get("Payments", pd.DataFrame()).copy()
+uw = D.get("Underwriting", pd.DataFrame()).copy()
+defaults = D.get("Default_Events", pd.DataFrame()).copy()
+coll = D.get("Collateral", pd.DataFrame()).copy()
+mac = D.get("Macro", pd.DataFrame()).copy()
 
-for df, cols in [
-    (snapshots,['Snapshot_Date']), (financials,['Snapshot_Date']), (payments,['Due_Date']),
-    (ratings,['Rating_Date']), (defaults,['Default_Date']), (events,['Event_Date']),
-    (collections,['Event_Date']), (underwriting,['Application_Date']), (macro,['Snapshot_Date']),
-    (loans,['Origination_Date','Maturity_Date'])
-]:
-    for c in cols:
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors='coerce')
+for df in [loans,snap,customers,fin,pay,uw,defaults,coll,mac]:
+    if not df.empty:
+        for c in df.columns:
+            if "Date" in c or "date" in c or c in ["Snapshot_Date","Month","Application_Date","Approval_Date","Due_Date","Default_Date","Event_Date","Valuation_Date"]:
+                try: df[c] = pd.to_datetime(df[c], errors="coerce")
+                except Exception: pass
 
-# One-bank portfolio
-bank_loan_ids = set(loans.loc[loans['Bank_ID'].astype(str).eq(BANK_ID), 'Loan_ID'].astype(str))
-loans = loans[loans['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-snapshots = snapshots[snapshots['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-ratings = ratings[ratings['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-defaults = defaults[defaults['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-underwriting = underwriting[underwriting['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-events = events[events['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-payments = payments[payments['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-collateral = collateral[collateral['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-collections = collections[collections['Loan_ID'].astype(str).isin(bank_loan_ids)].copy()
-bank_customer_ids = set(loans['Customer_ID'].astype(str))
-customers = customers[customers['Customer_ID'].astype(str).isin(bank_customer_ids)].copy()
-financials = financials[financials['Customer_ID'].astype(str).isin(bank_customer_ids)].copy()
+# Normalise likely date columns
+for c in ["Snapshot_Date","Month"]:
+    if c in fin.columns:
+        fin[c]=pd.to_datetime(fin[c],errors="coerce")
+        break
 
-latest_date = snapshots['Snapshot_Date'].max()
-if pd.isna(latest_date):
-    st.error('Nėra galiojančios stebėjimo datos paskolų duomenyse.')
-    st.stop()
-latest = snapshots[snapshots['Snapshot_Date'].eq(latest_date)].copy()
+# latest snapshot
+if not snap.empty and "Snapshot_Date" in snap.columns:
+    snap["Snapshot_Date"] = pd.to_datetime(snap["Snapshot_Date"], errors="coerce")
+    latest_date = snap["Snapshot_Date"].max()
+    latest = snap[snap["Snapshot_Date"].eq(latest_date)].copy()
+else:
+    latest_date = pd.NaT
+    latest = snap.copy()
 
-STAGE_LABEL = {1:'Pirmas kredito rizikos etapas', 2:'Antras kredito rizikos etapas', 3:'Trečias kredito rizikos etapas'}
-latest['Kredito rizikos etapas'] = latest['IFRS9_Stage'].map(STAGE_LABEL).fillna(latest['IFRS9_Stage'].astype(str))
-snapshots['Kredito rizikos etapas'] = snapshots['IFRS9_Stage'].map(STAGE_LABEL).fillna(snapshots['IFRS9_Stage'].astype(str))
+# Friendly labels
+stage_map = {1:"Geros kredito kokybės paskolos",2:"Padidėjusios rizikos paskolos",3:"Probleminės paskolos"}
 
-BLUE='#1478ff'; NAVY='#092545'; RED='#d84a4a'; AMBER='#e8a317'; GREEN='#19a66b'
+# Common numeric helpers
 
+def num(df, col, default=0.0):
+    return pd.to_numeric(df[col], errors="coerce").fillna(default) if col in df.columns else pd.Series(default,index=df.index,dtype=float)
+
+def pct(x): return f"{x*100:.1f}%"
 def eur(x):
-    if pd.isna(x): return '–'
-    if abs(x) >= 1_000_000: return f'€{x/1_000_000:,.1f} mln.'
-    if abs(x) >= 1_000: return f'€{x/1_000:,.0f} tūkst.'
-    return f'€{x:,.0f}'
+    if pd.isna(x): return "–"
+    if abs(x)>=1_000_000: return f"{x/1_000_000:.1f} mln. €"
+    if abs(x)>=1_000: return f"{x/1_000:.0f} tūkst. €"
+    return f"{x:,.0f} €"
 
-def pct(x, digits=1):
-    return '–' if pd.isna(x) else f'{100*x:.{digits}f} %'
+def money(x): return f"{x:,.0f} €".replace(","," ")
 
-def kpi(label,value,note=''):
-    st.markdown(f'<div class="kpi"><div class="kpi-l">{label}</div><div class="kpi-v">{value}</div><div class="kpi-n">{note}</div></div>', unsafe_allow_html=True)
+def safe_delta(cur, prev):
+    if prev in [0,None] or pd.isna(prev): return None
+    return cur-prev
 
-def title(t,s):
-    st.markdown(f'<div class="page-title">{t}</div><div class="page-sub">{s}</div>', unsafe_allow_html=True)
+def metric_card(title, value, subtitle="", tone="neutral"):
+    cls = f"kpi-{tone}"
+    st.markdown(f'<div class="card"><div class="kpi-title">{title}</div><div class="kpi-value">{value}</div><div class="kpi-sub {cls}">{subtitle}</div></div>', unsafe_allow_html=True)
 
-def section(t,s=''):
-    st.markdown(f'<div class="section">{t}</div><div class="section-sub">{s}</div>', unsafe_allow_html=True)
-
-def explain(text):
-    st.markdown(f'<div class="chart-help">{text}</div>', unsafe_allow_html=True)
-
-def style_fig(fig, height=390):
-    fig.update_layout(height=height, margin=dict(l=15,r=15,t=55,b=15), paper_bgcolor='white', plot_bgcolor='white', font=dict(family='Arial', color='#334155'), legend_title_text='', hoverlabel=dict(bgcolor='white'))
+def fig_base(fig, height=360):
+    fig.update_layout(height=height, margin=dict(l=10,r=10,t=45,b=10), paper_bgcolor="white", plot_bgcolor="white", font=dict(family="Arial",color="#20324a"), legend=dict(orientation="h",y=1.08,x=0), hoverlabel=dict(bgcolor="white"))
     fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(gridcolor='#edf1f6')
+    fig.update_yaxes(gridcolor="#edf1f6", zeroline=False)
     return fig
 
-def weighted_average(df, value, weight='EAD_EUR'):
-    z = df[[value,weight]].dropna()
-    return np.average(z[value], weights=z[weight]) if len(z) and z[weight].sum() > 0 else np.nan
+def question(title, subtitle):
+    st.markdown(f'<div class="section-title">{title}</div><div class="section-sub">{subtitle}</div>', unsafe_allow_html=True)
 
-def latest_per_loan(df):
-    x = df.sort_values(['Loan_ID','Snapshot_Date']).drop_duplicates('Loan_ID', keep='last')
-    return x
+def alert(kind, title, text):
+    st.markdown(f'<div class="alert alert-{kind}"><div class="alert-title">{title}</div><div class="alert-text">{text}</div></div>', unsafe_allow_html=True)
 
+# sidebar
 with st.sidebar:
-    st.markdown('<div class="sidebar-title">🏦 Kredito rizikos stebėsena</div><div class="sidebar-sub">Vieno banko paskolų portfelio analizė</div>', unsafe_allow_html=True)
-    page = st.radio('Ataskaita', ['Vadovybės apžvalga','Asmens profilis','Kredito portfelio rizika','Rizikos dinamika ir scenarijai'], label_visibility='collapsed')
-    st.markdown(f'<div class="side-card"><b>Ataskaitos data</b><br><span style="color:#b8c9df">{latest_date:%Y-%m-%d}</span><br><br><b>Aktyvios paskolos</b><br><span style="color:#b8c9df">{len(latest):,}</span></div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:22px;font-weight:900;margin-bottom:5px">🏦 Kredito rizika</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:13px;color:#b8c9df!important;margin-bottom:18px">Vieno banko vadovybės rizikos ataskaita</div>', unsafe_allow_html=True)
+    page = st.radio("Ataskaitos dalis", ["Vadovybės apžvalga","Asmens profilis","Portfelio rizika","Rizikos raida ir scenarijai"], label_visibility="collapsed")
+    st.markdown('<div class="sidebar-card"><b>Ataskaitos data</b><br><span style="color:#b8c9df">'+("Nėra duomenų" if pd.isna(latest_date) else latest_date.strftime("%Y-%m-%d"))+f'</span><br><br><b>Aktyvios paskolos</b><br><span style="color:#b8c9df">{len(latest):,}</span></div>',unsafe_allow_html=True)
 
-# Core KPIs
-latest_ead = latest['EAD_EUR'].sum()
-stage2_ratio = latest.loc[latest['IFRS9_Stage'].eq(2),'EAD_EUR'].sum()/latest_ead if latest_ead else np.nan
-stage3_ratio = latest.loc[latest['IFRS9_Stage'].eq(3),'EAD_EUR'].sum()/latest_ead if latest_ead else np.nan
-npl_ratio = latest.loc[latest['DPD_Days'].ge(90),'EAD_EUR'].sum()/latest_ead if latest_ead else np.nan
-ecl = latest['ECL_EUR'].sum()
-avg_pd = weighted_average(latest,'PD_12M')
-avg_ltv = weighted_average(latest,'Current_LTV')
+# prepare latest fields
+EAD = num(latest,"EAD_EUR").sum()
+if "IFRS9_Stage" in latest.columns:
+    latest["IFRS9_Stage"] = pd.to_numeric(latest["IFRS9_Stage"],errors="coerce")
+problem_ead = num(latest.loc[latest.get("IFRS9_Stage",pd.Series(index=latest.index)).eq(3)],"EAD_EUR").sum() if not latest.empty else 0
+stage2_ead = num(latest.loc[latest.get("IFRS9_Stage",pd.Series(index=latest.index)).eq(2)],"EAD_EUR").sum() if not latest.empty else 0
+past90_ead = num(latest.loc[num(latest,"Days_Past_Due").ge(90)],"EAD_EUR").sum() if not latest.empty else 0
+problem_ratio = problem_ead/EAD if EAD else 0
+stage2_ratio = stage2_ead/EAD if EAD else 0
+past90_ratio = past90_ead/EAD if EAD else 0
 
-if page == 'Vadovybės apžvalga':
-    title('Vadovybės kredito rizikos apžvalga','Pagrindinis ekranas: kas yra rizikinga, kur rizika auga ir kur reikia vadovybės dėmesio.')
-    cols=st.columns(6)
-    vals=[
-        ('Kredito pozicija',eur(latest_ead),f'{latest["Loan_ID"].nunique():,} paskolų'),
-        ('Antras kredito rizikos etapas',pct(stage2_ratio),'portfelio pagal kredito poziciją'),
-        ('Trečias kredito rizikos etapas',pct(stage3_ratio),'portfelio pagal kredito poziciją'),
-        ('Daugiau kaip 90 dienų vėluojanti dalis',pct(npl_ratio),'portfelio pagal kredito poziciją'),
-        ('Tikėtinas kredito nuostolis',eur(ecl),pct(ecl/latest_ead) if latest_ead else '–'),
-        ('Vidutinė įsipareigojimų nevykdymo tikimybė',pct(avg_pd),'svertinė pagal kredito poziciją')]
-    for c,v in zip(cols,vals):
-        with c:kpi(*v)
+# 1 Management overview
+if page=="Vadovybės apžvalga":
+    st.title("Vadovybės kredito rizikos apžvalga")
+    st.caption("Pagrindinis klausimas: ar banko kredito portfelio rizika didėja ir kur reikia vadovybės dėmesio?")
+    cols=st.columns(5)
+    vals=[("Paskolų portfelis",eur(EAD),"dabartinis likutis","neutral"),("Padidėjusios rizikos paskolos",pct(stage2_ratio),"dalis viso portfelio","amber"),("Probleminės paskolos",pct(problem_ratio),"dalis viso portfelio","red"),("Daugiau kaip 90 d. vėlavimas",pct(past90_ratio),"dalis viso portfelio","red"),("Probleminių paskolų suma",eur(problem_ead),"paskolos su didžiausiu kredito kokybės pablogėjimu","red")]
+    for c,(a,b,d,t) in zip(cols,vals):
+        with c: metric_card(a,b,d,t)
 
-    section('1. Ar kredito kokybė blogėja?','Vadovybei svarbiausia matyti ne vien dabartinę situaciją, bet kryptį. Šis grafikas rodo tris pagrindinius ankstyvo ir vėlyvo pablogėjimo signalus.')
-    monthly = snapshots.groupby('Snapshot_Date',as_index=False).apply(lambda g: pd.Series({
-        'Antro etapo dalis': g.loc[g.IFRS9_Stage.eq(2),'EAD_EUR'].sum()/g.EAD_EUR.sum(),
-        'Trečio etapo dalis': g.loc[g.IFRS9_Stage.eq(3),'EAD_EUR'].sum()/g.EAD_EUR.sum(),
-        'Daugiau kaip 90 dienų vėlavimo dalis': g.loc[g.DPD_Days.ge(90),'EAD_EUR'].sum()/g.EAD_EUR.sum(),
-    }), include_groups=False).reset_index()
-    long = monthly.melt('Snapshot_Date', var_name='Rodiklis', value_name='Dalis')
-    fig=px.line(long,x='Snapshot_Date',y='Dalis',color='Rodiklis',markers=True,title='Kredito kokybės blogėjimo signalai laikui bėgant')
-    fig.update_yaxes(tickformat='.1%',title='Portfelio dalis')
-    st.plotly_chart(style_fig(fig,410),use_container_width=True)
-    explain('Kaip skaityti: jei antras etapas didėja anksčiau nei trečias etapas ir daugiau kaip 90 dienų vėlavimai, tai reiškia, kad rizika pradeda didėti dar prieš paskoloms tampant probleminėmis. Tai vienas svarbiausių stebėjimų vadovybei. ECB kredito rizikos metodikoje atskirai vertinama portfelio kokybės raida, antras etapas, pradelstos pozicijos ir jų dinamika. citeturn511280view0')
+    st.markdown("###")
+    alerts=[]
+    if problem_ratio>0.05: alerts.append(("red","Probleminių paskolų lygis viršija 5 %",f"Probleminių paskolų likutis sudaro {pct(problem_ratio)} banko paskolų portfelio. Tai reikšminga rizikos zona, kurią verta vertinti kartu su naujų probleminių paskolų srautu ir užstato padengimu."))
+    else: alerts.append(("green","Probleminių paskolų dalis kontroliuojama",f"Probleminės paskolos sudaro {pct(problem_ratio)} portfelio."))
+    if stage2_ratio>0.10: alerts.append(("amber","Daugėja paskolų, kurių rizika jau pablogėjusi",f"{pct(stage2_ratio)} portfelio priskirta padidėjusios rizikos grupei. Tai svarbus išankstinis signalas prieš klientui tampant probleminiu."))
+    high_ltv=(num(latest,"LTV").gt(.9)&num(latest,"EAD_EUR").gt(0)).mean() if not latest.empty and "LTV" in latest.columns else 0
+    if high_ltv>0.10: alerts.append(("amber","Reikšminga portfelio dalis turi aukštą užstato riziką",f"{pct(high_ltv)} kredito pozicijų turi didesnį nei 90 % paskolos ir užstato vertės santykį."))
+    for a,b,c in alerts: alert(a,b,c)
 
-    section('2. Kur bankas turi daugiausia rizikos?','Rodome ne tik rizikingumo procentą, bet ir kredito pozicijos dydį. Didelė rizika mažame portfelyje ir didelė rizika dideliame portfelyje nėra tas pats.')
-    prod=latest.groupby('Product_Code',as_index=False).agg(Kredito_pozicija=('EAD_EUR','sum'), Problemines=('EAD_EUR',lambda x:0))
-    prod['Problemines']=latest.groupby('Product_Code').apply(lambda g:g.loc[g.IFRS9_Stage.eq(3),'EAD_EUR'].sum(),include_groups=False).values
-    prod['Probleminiu_dalis']=prod['Problemines']/prod['Kredito_pozicija']
-    prod=prod.merge(D['Products'][['Product_Code','Product_Name']],on='Product_Code',how='left').sort_values('Kredito_pozicija',ascending=False)
-    fig=px.scatter(prod,x='Kredito_pozicija',y='Probleminiu_dalis',size='Kredito_pozicija',text='Product_Name',title='Produktų rizikos žemėlapis',labels={'Kredito_pozicija':'Kredito pozicija, eurais','Probleminiu_dalis':'Trečio etapo dalis'})
-    fig.update_yaxes(tickformat='.1%')
-    fig.update_traces(textposition='top center')
-    st.plotly_chart(style_fig(fig,410),use_container_width=True)
-    explain('Kaip skaityti: dešinėje esantys burbulai yra dideli portfeliai; kylantys aukštyn – rizikingesni portfeliai. Viršutiniame dešiniajame kampe esantis produktas būtų prioritetinė vadovybės rizikos tema. ECB ir Bazelio komiteto kredito rizikos analizė remiasi portfelio sudėtimi, rizikos kokybe ir rizikos parametrais. citeturn511280view0turn511280view2')
+    question("Ar kredito kokybė gerėja, ar blogėja?","Šis grafikas rodo tris svarbiausius sluoksnius: jau problemines paskolas ir ankstyvus signalus, kad paskola gali tapti problemine.")
+    if not snap.empty:
+        tmp=snap.groupby("Snapshot_Date").apply(lambda g: pd.Series({"Probleminės paskolos":num(g.loc[pd.to_numeric(g.get("IFRS9_Stage"),errors="coerce").eq(3)],"EAD_EUR").sum()/num(g,"EAD_EUR").sum() if num(g,"EAD_EUR").sum() else 0,"Padidėjusios rizikos paskolos":num(g.loc[pd.to_numeric(g.get("IFRS9_Stage"),errors="coerce").eq(2)],"EAD_EUR").sum()/num(g,"EAD_EUR").sum() if num(g,"EAD_EUR").sum() else 0,"Daugiau kaip 90 d. vėlavimas":num(g.loc[num(g,"Days_Past_Due").ge(90)],"EAD_EUR").sum()/num(g,"EAD_EUR").sum() if num(g,"EAD_EUR").sum() else 0})).reset_index()
+        long=tmp.melt(id_vars="Snapshot_Date",var_name="Rodiklis",value_name="Dalis")
+        fig=px.line(long,x="Snapshot_Date",y="Dalis",color="Rodiklis",markers=True)
+        fig.update_yaxes(tickformat=".1%")
+        st.plotly_chart(fig_base(fig),use_container_width=True)
 
-    section('3. Kur atsiranda nauja rizika?','Ši lentelė skirta ne visoms paskoloms, o toms, kurių dabartiniai rodikliai jau signalizuoja apie galimą problemą.')
-    risk=latest.copy()
-    risk['Rizikos balas']=risk['IFRS9_Stage']*30+risk['PD_12M']*100+risk['DPD_Days'].clip(upper=180)/6+risk['Current_LTV'].fillna(0)*10
-    risk=risk.sort_values(['Rizikos balas','EAD_EUR'],ascending=False).head(15).merge(loans[['Loan_ID','Product_Name','Region']],on='Loan_ID',how='left')
-    st.dataframe(risk[['Loan_ID','Customer_ID','Product_Name','Region','EAD_EUR','IFRS9_Stage','DPD_Days','PD_12M','Current_LTV','ECL_EUR']].rename(columns={
-        'Loan_ID':'Paskola','Customer_ID':'Klientas','Product_Name':'Produktas','Region':'Regionas','EAD_EUR':'Kredito pozicija','IFRS9_Stage':'Kredito rizikos etapas','DPD_Days':'Vėlavimo dienos','PD_12M':'Įsipareigojimų nevykdymo tikimybė','Current_LTV':'Paskolos ir užstato vertės santykis','ECL_EUR':'Tikėtinas kredito nuostolis'}),use_container_width=True,hide_index=True)
+    question("Kur banko rizika didžiausia?","Didelis portfelis kartu su dideliu probleminių paskolų lygiu yra svarbesnis nei maža, bet labai rizikinga nišinė grupė.")
+    if not latest.empty:
+        g=latest.groupby("Product",as_index=False).agg(Paskolų_likutis=("EAD_EUR","sum"), Probleminės_paskolos=("IFRS9_Stage",lambda s:(pd.to_numeric(s,errors="coerce").eq(3)).mean()))
+        g["Pavadinimas"]=g["Product"]
+        fig=px.scatter(g,x="Paskolų_likutis",y="Probleminės_paskolos",size="Paskolų_likutis",text="Pavadinimas")
+        fig.update_traces(textposition="top center")
+        fig.update_yaxes(tickformat=".1%",title="Probleminių paskolų dalis")
+        fig.update_xaxes(title="Paskolų likutis")
+        st.plotly_chart(fig_base(fig,360),use_container_width=True)
 
-elif page == 'Asmens profilis':
-    title('Asmens profilis','Vieno kliento „360°“ vaizdas: finansinė padėtis, paskolos, mokėjimų disciplina ir kredito rizikos pokyčiai.')
-    cid_input=st.text_input('Įveskite kliento kodą', value=str(customers['Customer_ID'].iloc[0]) if len(customers) else '')
-    cid=str(cid_input).strip()
-    cust=customers[customers['Customer_ID'].astype(str).eq(cid)]
+# 2 Customer
+elif page=="Asmens profilis":
+    st.title("Asmens kredito profilis")
+    st.caption("Įveskite kliento kodą ir įvertinkite jo dabartinę finansinę būklę bei kredito riziką.")
+    if customers.empty or "Customer_ID" not in customers.columns:
+        st.error("Klientų duomenų lentelėje nėra Customer_ID.")
+        st.stop()
+    default_cid=str(customers.iloc[0]["Customer_ID"])
+    cid=st.text_input("Asmens kodas / kliento kodas",value=default_cid).strip()
+    cust=customers[customers["Customer_ID"].astype(str).eq(cid)]
     if cust.empty:
-        st.warning('Tokio kliento testiniuose duomenyse nerasta.')
+        st.warning("Tokio kliento testiniuose duomenyse nėra.")
     else:
-        c=cust.iloc[0]
-        cust_loans=loans[loans['Customer_ID'].astype(str).eq(cid)].copy()
-        cust_latest=latest[latest['Customer_ID'].astype(str).eq(cid)].copy()
-        cust_fin=financials[financials['Customer_ID'].astype(str).eq(cid)].sort_values('Snapshot_Date').copy()
-        cols=st.columns(6)
-        metrics=[('Klientų segmentas',c['Customer_Segment'],f'Regionas: {c["Region"]}'),('Amžius',f'{int(c["Age"])} m.', 'pagal kliento duomenis'),('Metinės pajamos',eur(c['Annual_Income_EUR']),'deklaruotos'),('Paskolų skaičius',f'{len(cust_loans):,}','banko portfelyje'),('Likusi kredito pozicija',eur(cust_latest['EAD_EUR'].sum()),'dabartinė'),('Vidutinė įsipareigojimų nevykdymo tikimybė',pct(weighted_average(cust_latest,'PD_12M')), 'svertinė pagal poziciją')]
-        for col,v in zip(cols,metrics):
-            with col:kpi(*v)
-        c1,c2=st.columns(2)
-        with c1:
-            section('Finansinės padėties dinamika','Šis grafikas atsako į klausimą: ar kliento pajėgumas aptarnauti skolą gerėja, ar blogėja?')
-            if not cust_fin.empty:
-                fig=go.Figure()
-                fig.add_trace(go.Scatter(x=cust_fin['Snapshot_Date'],y=cust_fin['Annual_Income_EUR'],mode='lines+markers',name='Metinės pajamos'))
-                fig.add_trace(go.Scatter(x=cust_fin['Snapshot_Date'],y=cust_fin['Total_Debt_EUR'],mode='lines+markers',name='Bendra skola'))
-                fig.update_layout(title='Pajamų ir bendros skolos pokytis',yaxis_title='Eurai')
-                st.plotly_chart(style_fig(fig,370),use_container_width=True)
-                explain('Jeigu skola kyla tuo metu, kai pajamos mažėja, finansinė padėtis blogėja. Tai svarbiau už vienkartinį kredito balą.')
-        with c2:
-            section('Mokėjimų elgsena','Rodoma, ar klientas pradeda vėluoti ir ar vėlavimai ilgėja.')
-            pay=payments[payments['Customer_ID'].astype(str).eq(cid)].copy()
-            if not pay.empty:
-                paym=pay.groupby(pay['Due_Date'].dt.to_period('M'),as_index=False).agg(Vėlavimo_dienos=('Days_Late','mean'),Vėluojančių_mokėjimų_dalis=('Days_Late',lambda x:(x>0).mean()))
-                paym['Mėnuo']=paym['Due_Date'].astype(str)
-                fig=px.bar(paym,x='Mėnuo',y='Vėlavimo_dienos',title='Vidutinis mokėjimo vėlavimas pagal mėnesį')
-                st.plotly_chart(style_fig(fig,370),use_container_width=True)
-                explain('Didėjantis vidutinis vėlavimas yra ankstyvas įspėjimo signalas. Ypač svarbu, jei vėliau klientas pereina į aukštesnį kredito rizikos etapą.')
-        section('Kliento paskolos','Visos kliento paskolos su dabartine rizikos būsena.')
-        table=cust_latest.merge(loans[['Loan_ID','Product_Name','Origination_Date','Original_Amount_EUR']],on='Loan_ID',how='left')
-        st.dataframe(table[['Loan_ID','Product_Name','Origination_Date','Original_Amount_EUR','EAD_EUR','IFRS9_Stage','DPD_Days','PD_12M','LGD','Current_LTV','ECL_EUR']].rename(columns={
-            'Loan_ID':'Paskola','Product_Name':'Produktas','Origination_Date':'Suteikimo data','Original_Amount_EUR':'Pradinė paskolos suma','EAD_EUR':'Kredito pozicija','IFRS9_Stage':'Kredito rizikos etapas','DPD_Days':'Vėlavimo dienos','PD_12M':'Įsipareigojimų nevykdymo tikimybė','LGD':'Nuostolio dalis įsipareigojimų nevykdymo atveju','Current_LTV':'Paskolos ir užstato vertės santykis','ECL_EUR':'Tikėtinas kredito nuostolis'}),use_container_width=True,hide_index=True)
-        section('Automatiniai rizikos signalai','Signalai padeda greitai nuspręsti, ar klientą verta papildomai peržiūrėti.')
-        alerts=[]
-        if (cust_latest['DPD_Days']>=30).any(): alerts.append(('danger','Klientas turi paskolą, kurios mokėjimai vėluoja 30 ar daugiau dienų.'))
-        if (cust_latest['IFRS9_Stage']==2).any(): alerts.append(('warn','Bent viena paskola yra antrame kredito rizikos etape.'))
-        if (cust_latest['IFRS9_Stage']==3).any(): alerts.append(('danger','Bent viena paskola yra trečiame kredito rizikos etape.'))
-        if (cust_latest['Current_LTV']>0.9).any(): alerts.append(('warn','Bent vienos paskolos paskolos ir užstato vertės santykis viršija 90 procentų.'))
-        if not cust_fin.empty and len(cust_fin)>=2:
-            latest_fin=cust_fin.iloc[-1]; prev_fin=cust_fin.iloc[-2]
-            if prev_fin['Annual_Income_EUR'] and latest_fin['Annual_Income_EUR']/prev_fin['Annual_Income_EUR']-1 < -0.1: alerts.append(('warn','Metinės pajamos per paskutinį stebėjimo laikotarpį sumažėjo daugiau kaip 10 procentų.'))
-        if not alerts: alerts=[('good','Reikšmingų automatiškai aptiktų rizikos signalų nėra.')]
-        for typ,msg in alerts:
-            st.markdown(f'<div class="{typ}">{msg}</div>',unsafe_allow_html=True)
+        row=cust.iloc[0]
+        l=loans[loans["Customer_ID"].astype(str).eq(cid)] if "Customer_ID" in loans.columns else loans.iloc[0:0]
+        s=latest[latest["Customer_ID"].astype(str).eq(cid)] if "Customer_ID" in latest.columns else latest.iloc[0:0]
+        f=fin[fin["Customer_ID"].astype(str).eq(cid)].sort_values(next((c for c in ["Snapshot_Date","Month"] if c in fin.columns),fin.columns[0]))
+        dcols=st.columns(5)
+        vals=[("Kliento segmentas",str(row.get("Customer_Segment","–")),""), ("Paskolų skaičius",str(len(l)),""),("Bendra skola",eur(num(s,"EAD_EUR").sum()),"dabartinis likutis"),("Paskutinės pajamos",eur(float(num(f,"Monthly_Income_EUR").iloc[-1])) if not f.empty else "–","per mėnesį"),("Didžiausias vėlavimas",f"{int(num(s,'Days_Past_Due').max() if not s.empty else 0)} d.","mūsų duomenyse")]
+        for c,(a,b,d) in zip(dcols,vals):
+            with c: metric_card(a,b,d)
+        st.markdown("###")
+        left,right=st.columns([1.4,1])
+        with left:
+            question("Kaip keitėsi kliento finansinė padėtis?","Palyginame pajamas, skolos likutį ir mėnesio mokėjimus. Tikslas – nustatyti, ar kliento gebėjimas mokėti paskolas silpnėja.")
+            if not f.empty:
+                cols=[c for c in ["Snapshot_Date","Month"] if c in f.columns]
+                datecol=cols[0]
+                q=f[[datecol]+[c for c in ["Monthly_Income_EUR","Total_Debt_EUR"] if c in f.columns]].melt(id_vars=datecol,var_name="Rodiklis",value_name="Suma")
+                fig=px.line(q,x=datecol,y="Suma",color="Rodiklis",markers=True)
+                fig.update_yaxes(tickprefix="€")
+                st.plotly_chart(fig_base(fig,330),use_container_width=True)
+        with right:
+            question("Kas šiuo metu kelia riziką?","Automatiškai išrenkami aiškiausi signalai, kuriuos vadovas galėtų perduoti rizikos valdymo komandai.")
+            income=float(num(f,"Monthly_Income_EUR").iloc[-1]) if not f.empty and "Monthly_Income_EUR" in f.columns else 0
+            totaldebt=float(num(f,"Total_Debt_EUR").iloc[-1]) if not f.empty and "Total_Debt_EUR" in f.columns else 0
+            maxdpd=int(num(s,"Days_Past_Due").max()) if not s.empty else 0
+            if income and totaldebt/income>60: alert("red","Didelė skolos našta",f"Kliento skola sudaro apie {totaldebt/income:.1f} mėnesio pajamų.")
+            if maxdpd>=30: alert("red","Reikšmingas mokėjimų vėlavimas",f"Maksimalus nustatytas vėlavimas – {maxdpd} dienos.")
+            if maxdpd==0 and income and totaldebt/income<=60: alert("green","Šiuo metu nėra aiškaus didelio rizikos signalo","Pagal testinius duomenis klientas neturi reikšmingo mokėjimų vėlavimo, o skolos našta nėra išskirtinai didelė.")
+        question("Kokias paskolas turi klientas?","Visos kliento paskolos vienoje vietoje, kad būtų galima pamatyti bendrą poziciją ir riziką.")
+        if not s.empty:
+            showcols=[c for c in ["Loan_ID","Product","EAD_EUR","Interest_Rate","LTV","Days_Past_Due","IFRS9_Stage","PD"] if c in s.columns]
+            tbl=s[showcols].copy()
+            if "IFRS9_Stage" in tbl.columns: tbl["Kredito būklė"]=tbl["IFRS9_Stage"].map(stage_map)
+            st.dataframe(tbl.drop(columns=["IFRS9_Stage"] if "IFRS9_Stage" in tbl.columns else []),use_container_width=True,hide_index=True)
 
-elif page == 'Kredito portfelio rizika':
-    title('Kredito portfelio rizika','Portfelio sudėtis, paskolų suteikimo kokybė, užstatas ir rizikos koncentracija.')
-    cols=st.columns(5)
-    vals=[('Kredito pozicija',eur(latest_ead),'dabartinis portfelis'),('Probleminių paskolų dalis',pct(stage3_ratio),'trečias kredito rizikos etapas'),('Antras kredito rizikos etapas',pct(stage2_ratio),'ankstyvas pablogėjimo signalas'),('Vidutinis paskolos ir užstato vertės santykis',pct(avg_ltv),'svertinis pagal poziciją'),('Tikėtino kredito nuostolio dalis',pct(ecl/latest_ead),'nuo kredito pozicijos')]
-    for c,v in zip(cols,vals):
-        with c:kpi(*v)
+# 3 portfolio risk
+elif page=="Portfelio rizika":
+    st.title("Portfelio rizika")
+    st.caption("Kur rizika yra susikaupusi ir kokie klientų ar produktų požymiai ją geriausiai paaiškina?")
+    if latest.empty: st.warning("Nėra naujausio portfelio stebėjimo."); st.stop()
+    q=latest.groupby("Product",as_index=False).agg(Paskolų_likutis=("EAD_EUR","sum"),Vidutinė_rizika=("PD", "mean"),Probleminių_paskolų_dalis=("IFRS9_Stage",lambda s:(pd.to_numeric(s,errors="coerce").eq(3)).mean())) if "PD" in latest.columns else latest.groupby("Product",as_index=False).agg(Paskolų_likutis=("EAD_EUR","sum"),Probleminių_paskolų_dalis=("IFRS9_Stage",lambda s:(pd.to_numeric(s,errors="coerce").eq(3)).mean()))
+    question("Kur rizika didžiausia pagal produktą?","Kuo stulpelis didesnis, tuo daugiau banko pinigų yra tame produkte. Kuo spalva tamsesnė, tuo didesnė probleminių paskolų dalis.")
+    fig=px.bar(q.sort_values("Paskolų_likutis"),x="Paskolų_likutis",y="Product",orientation="h",color="Probleminių_paskolų_dalis",color_continuous_scale=["#cfe9df","#e39a22","#d14343"])
+    fig.update_xaxes(title="Paskolų likutis")
+    fig.update_yaxes(title="")
+    fig.update_coloraxes(colorbar_title="Probleminių paskolų dalis",colorbar_tickformat=".0%")
+    st.plotly_chart(fig_base(fig,390),use_container_width=True)
+    question("Ar paskolų suteikimo metu buvo matomi rizikos signalai?","Ši analizė tikrina, ar klientai, kuriems paskolos pradžioje buvo taikoma didesnė skolos našta ar didesnis paskolos ir užstato santykis, vėliau tapo problemiškesni.")
+    if not uw.empty and "Origination_LTV" in uw.columns and "IFRS9_Stage" in uw.columns:
+        tmp=uw.copy(); tmp["Origination_LTV"]=pd.to_numeric(tmp["Origination_LTV"],errors="coerce")
+        tmp["LTV grupė"] = pd.cut(tmp["Origination_LTV"],bins=[0,.6,.7,.8,.9,1,10],right=False,include_lowest=True).astype(str)
+        out=tmp.groupby("LTV grupė",observed=True).apply(lambda g: (pd.to_numeric(g["IFRS9_Stage"],errors="coerce").eq(3)).mean(),include_groups=False).reset_index(name="Probleminių paskolų dalis")
+        fig=px.bar(out,x="LTV grupė",y="Probleminių paskolų dalis")
+        fig.update_yaxes(tickformat=".1%",title="Probleminių paskolų dalis")
+        fig.update_xaxes(title="Paskolos ir užstato vertės santykis suteikimo metu")
+        st.plotly_chart(fig_base(fig,340),use_container_width=True)
+    question("Kurios paskolos šiuo metu reikalauja daugiausia dėmesio?","Sąrašas, skirtas ne statistikai, o konkrečiai rizikos valdymo veiklai.")
+    r=latest.copy(); r["Rizikos balas"]=num(r,"PD")*0.5+num(r,"LTV")*0.2+(num(r,"Days_Past_Due").clip(0,90)/90)*0.3 if "PD" in r.columns else (num(r,"Days_Past_Due").clip(0,90)/90)
+    show=[c for c in ["Loan_ID","Customer_ID","Product","EAD_EUR","PD","LTV","Days_Past_Due","IFRS9_Stage"] if c in r.columns]
+    st.dataframe(r.sort_values("Rizikos balas",ascending=False).head(20)[show],use_container_width=True,hide_index=True)
 
-    section('1. Kur rizika susikaupusi pagal produktą?','Palyginame portfelio dydį su probleminių paskolų dalimi. Taip išvengiame klaidos vertinti riziką vien pagal procentą.')
-    p=latest.merge(D['Products'][['Product_Code','Product_Name']],on='Product_Code',how='left')
-    p=p.groupby('Product_Name').apply(lambda g: pd.Series({'Kredito pozicija':g.EAD_EUR.sum(),'Probleminių paskolų dalis':g.loc[g.IFRS9_Stage.eq(3),'EAD_EUR'].sum()/g.EAD_EUR.sum(),'Antro etapo dalis':g.loc[g.IFRS9_Stage.eq(2),'EAD_EUR'].sum()/g.EAD_EUR.sum()}),include_groups=False).reset_index().sort_values('Kredito pozicija',ascending=False)
-    fig=px.bar(p,x='Product_Name',y='Kredito pozicija',color='Probleminių paskolų dalis',title='Kredito pozicija pagal produktą',labels={'Product_Name':'Produktas','Kredito pozicija':'Eurai','Probleminių paskolų dalis':'Trečio etapo dalis'},color_continuous_scale=['#dff3ea','#f5e6b0','#f1c5c5'])
-    st.plotly_chart(style_fig(fig,410),use_container_width=True)
-    explain('Kaip skaityti: stulpelio aukštis parodo, kiek pinigų bankas turi konkrečiame produkte; spalvos intensyvumas parodo, kiek to produkto pozicijos jau yra trečiame etape. Tai leidžia vienu metu matyti dydį ir riziką. ECB viešose priežiūros statistikose taip pat skelbiami probleminių paskolų dydžiai ir jų pjūviai pagal sektorių. citeturn562348search4')
-
-    section('2. Ar pradinio paskolos vertinimo kokybė paaiškina dabartinę riziką?','Tai svarbus kredito suteikimo kontrolės testas: ar paskolos, kurioms jau suteikiant buvo didesnė finansinė našta, dažniau tampa probleminėmis?')
-    uw=underwriting.merge(latest[['Loan_ID','IFRS9_Stage','EAD_EUR']],on='Loan_ID',how='inner').copy()
+# 4 evolution / scenarios
+else:
+    st.title("Rizikos raida ir scenarijai")
+    st.caption("Ar rizika atsiranda naujose paskolose, kaip greitai klientai blogėja ir kas nutiktų nepalankaus scenarijaus atveju?")
+    question("Kiek paskolų per laiką pagerėjo ir kiek pablogėjo?","Tai paprastesnė migracijos analizė: stebime, kaip portfelis juda nuo geros būklės link didesnės rizikos.")
+    if not snap.empty:
+        s2=snap.copy(); s2["IFRS9_Stage"]=pd.to_numeric(s2["IFRS9_Stage"],errors="coerce")
+        g=s2.groupby("Snapshot_Date",as_index=False).agg(Geros=("IFRS9_Stage",lambda s:(s==1).sum()),Padidėjusios_rizikos=("IFRS9_Stage",lambda s:(s==2).sum()),Probleminės=("IFRS9_Stage",lambda s:(s==3).sum()))
+        long=g.melt(id_vars="Snapshot_Date",var_name="Kredito būklė",value_name="Paskolų skaičius")
+        fig=px.area(long,x="Snapshot_Date",y="Paskolų skaičius",color="Kredito būklė")
+        st.plotly_chart(fig_base(fig,350),use_container_width=True)
+    question("Ar naujesnės paskolos yra rizikingesnės?","Palyginame paskolas pagal suteikimo metus ir žiūrime, kokia jų dalis iki šiandien tapo problemine.")
+    if not loans.empty and "Origination_Date" in loans.columns and "Loan_ID" in loans.columns:
+        a=loans[["Loan_ID","Origination_Date"]].copy(); a["Suteikimo metai"]=pd.to_datetime(a["Origination_Date"],errors="coerce").dt.year
+        ss=latest[[c for c in ["Loan_ID","IFRS9_Stage"] if c in latest.columns]].copy(); ss["IFRS9_Stage"]=pd.to_numeric(ss["IFRS9_Stage"],errors="coerce")
+        v=a.merge(ss,on="Loan_ID",how="left").groupby("Suteikimo metai",as_index=False)["IFRS9_Stage"].apply(lambda s:(s==3).mean()).reset_index(name="Probleminių paskolų dalis")
+        if "Suteikimo metai" not in v.columns: v=v.rename(columns={v.columns[0]:"Suteikimo metai"})
+        fig=px.bar(v,x="Suteikimo metai",y="Probleminių paskolų dalis")
+        fig.update_yaxes(tickformat=".1%")
+        st.plotly_chart(fig_base(fig,330),use_container_width=True)
+    question("Kas nutiktų nepalankaus scenarijaus atveju?","Testinis scenarijus padidina riziką pagal paskolos rizikingumą. Rezultatas skirtas parodyti, kuri portfelio dalis būtų jautriausia ekonomikos pablogėjimui.")
+    scenario=st.selectbox("Scenarijus",["Vidutinis pablogėjimas","Stiprus pablogėjimas"])
+    shock=0.25 if scenario=="Vidutinis pablogėjimas" else 0.50
+    stressed=latest.copy(); stressed["Papildomas nuostolis"] = num(stressed,"EAD_EUR")*num(stressed,"LGD").replace(0,np.nan).fillna(0.45)*num(stressed,"PD").clip(lower=0)*shock if "PD" in stressed.columns else 0
+    stress_loss=stressed["Papildomas nuostolis"].sum()
     c1,c2=st.columns(2)
-    with c1:
-        uw['Skolos naštos grupė']=uw['Debt_To_Income_Band'].astype(object)
-        tmp=uw.groupby('Skolos naštos grupė',observed=False).apply(lambda g:pd.Series({'Probleminių paskolų dalis':g.loc[g.IFRS9_Stage.eq(3),'EAD_EUR'].sum()/g.EAD_EUR.sum() if g.EAD_EUR.sum() else np.nan}),include_groups=False).reset_index()
-        fig=px.bar(tmp,x='Skolos naštos grupė',y='Probleminių paskolų dalis',title='Probleminių paskolų dalis pagal pradinę skolos naštą')
-        fig.update_yaxes(tickformat='.1%',title='Trečio etapo dalis pagal kredito poziciją')
-        st.plotly_chart(style_fig(fig,370),use_container_width=True)
-        explain('Kaip skaityti: jeigu dešinėje esančios grupės turi daug didesnę probleminių paskolų dalį, tai rodo, kad didelė skolos našta suteikimo metu yra susijusi su vėlesniu kredito pablogėjimu.')
+    with c1: metric_card("Papildomas prognozuojamas nuostolis",eur(stress_loss),scenario,"red")
     with c2:
-        uw['Pradinio kredito balo grupė']=pd.cut(uw['Credit_Score'],bins=[0,550,600,650,700,750,1000],labels=['Iki 550','550–599','600–649','650–699','700–749','750 ir daugiau'],right=False,ordered=False).astype(object)
-        tmp=uw.groupby('Pradinio kredito balo grupė',observed=False).apply(lambda g:pd.Series({'Probleminių paskolų dalis':g.loc[g.IFRS9_Stage.eq(3),'EAD_EUR'].sum()/g.EAD_EUR.sum() if g.EAD_EUR.sum() else np.nan}),include_groups=False).reset_index()
-        fig=px.bar(tmp,x='Pradinio kredito balo grupė',y='Probleminių paskolų dalis',title='Probleminių paskolų dalis pagal pradinį kredito balą')
-        fig.update_yaxes(tickformat='.1%',title='Trečio etapo dalis pagal kredito poziciją')
-        st.plotly_chart(style_fig(fig,370),use_container_width=True)
-        explain('Kaip skaityti: geras kredito balas turėtų būti susijęs su mažesne vėlesne rizika. Jei kreivė tokio ryšio nerodo, verta tikrinti kredito vertinimo modelį arba duomenų kokybę.')
-
-    section('3. Koncentracija: kur vienas netikėtas smūgis galėtų labiausiai paveikti banką?','Koncentracijos analizė paprastai atliekama pagal klientus, sektorius, regionus, produktus ir užstato rūšis. ECB metodika aiškiai išskiria vieno kliento, sektoriaus, regiono ir kitų rizikos veiksnių koncentraciją. citeturn511280view0')
-    c1,c2=st.columns(2)
-    with c1:
-        cust_con=latest.groupby('Customer_ID',as_index=False)['EAD_EUR'].sum().sort_values('EAD_EUR',ascending=False).head(15)
-        cust_con['Klientas']=cust_con['Customer_ID'].astype(str)
-        fig=px.bar(cust_con,x='Klientas',y='EAD_EUR',title='Didžiausios vieno kliento kredito pozicijos',labels={'EAD_EUR':'Kredito pozicija, eurais'})
-        st.plotly_chart(style_fig(fig,370),use_container_width=True)
-        explain('Kaip skaityti: kuo aukštesnis stulpelis, tuo didesnė vieno kliento įtaka portfeliui. Tai padeda matyti vieno vardo koncentracijos riziką.')
-    with c2:
-        reg=latest.groupby('Region',as_index=False)['EAD_EUR'].sum().sort_values('EAD_EUR',ascending=False)
-        fig=px.pie(reg,names='Region',values='EAD_EUR',hole=.55,title='Kredito pozicijos pasiskirstymas pagal regioną')
-        st.plotly_chart(style_fig(fig,370),use_container_width=True)
-        explain('Kaip skaityti: didelė vieno regiono dalis reiškia, kad tam regionui nepalankus ekonominis ar nekilnojamojo turto pokytis galėtų turėti neproporcingą poveikį bankui.')
-
-elif page == 'Rizikos dinamika ir scenarijai':
-    title('Rizikos dinamika ir scenarijai','Paskolų migracija, suteikimo kartos, užstato atsparumas ir ekonominio pablogėjimo scenarijai.')
-
-    section('1. Kas iš tikrųjų blogėja?','Migracija parodo, kiek kredito pozicijos persikelia į blogesnę ar geresnę rizikos būseną. Tai informatyviau nei vien dabartinė trečio etapo dalis.')
-    dates=sorted(pd.Series(snapshots['Snapshot_Date'].dropna().unique()).tolist())
-    if len(dates)>=2:
-        prev_date=dates[-2]; cur_date=dates[-1]
-        prev=snapshots[snapshots['Snapshot_Date'].eq(prev_date)][['Loan_ID','IFRS9_Stage']].rename(columns={'IFRS9_Stage':'Ankstesnis etapas'})
-        cur=latest[['Loan_ID','IFRS9_Stage','EAD_EUR']].rename(columns={'IFRS9_Stage':'Dabartinis etapas'})
-        mig=prev.merge(cur,on='Loan_ID',how='inner')
-        mig['Ankstesnis etapas']=mig['Ankstesnis etapas'].map(STAGE_LABEL).fillna(mig['Ankstesnis etapas'].astype(str))
-        mig['Dabartinis etapas']=mig['Dabartinis etapas'].map(STAGE_LABEL).fillna(mig['Dabartinis etapas'].astype(str))
-        matrix=mig.pivot_table(index='Ankstesnis etapas',columns='Dabartinis etapas',values='EAD_EUR',aggfunc='sum',fill_value=0)
-        fig=px.imshow(matrix,aspect='auto',text_auto='.3s',title=f'Kredito pozicijos pasikeitimas nuo {pd.Timestamp(prev_date):%Y-%m-%d} iki {pd.Timestamp(cur_date):%Y-%m-%d}',labels={'x':'Dabartinis etapas','y':'Ankstesnis etapas','color':'Kredito pozicija'})
-        st.plotly_chart(style_fig(fig,420),use_container_width=True)
-        explain('Kaip skaityti: langeliai įstrižainėje rodo stabilias paskolas. Langeliai į dešinę rodo pablogėjimą, į kairę – pagerėjimą. Didelis pablogėjimo srautas iš pirmo į antrą etapą yra ankstyvas signalas, kurį verta tirti. ECB metodika tiesiogiai akcentuoja kredito rizikos etapų perėjimus ir antro etapo pozicijų raidą. citeturn511280view0')
-
-    section('2. Ar naujesnės paskolos blogesnės už senesnes?','Paskolų suteikimo kartų analizė leidžia palyginti skirtingais metais suteiktų paskolų kokybę.')
-    vint=loans[['Loan_ID','Origination_Date']].copy(); vint['Suteikimo metai']=vint['Origination_Date'].dt.year
-    vv=latest.merge(vint[['Loan_ID','Suteikimo metai']],on='Loan_ID',how='left')
-    vintage=vv.groupby('Suteikimo metai',as_index=False).apply(lambda g:pd.Series({
-        'Kredito pozicija':g.EAD_EUR.sum(),
-        'Probleminių paskolų dalis':g.loc[g.IFRS9_Stage.eq(3),'EAD_EUR'].sum()/g.EAD_EUR.sum(),
-        'Daugiau kaip 90 dienų vėlavimo dalis':g.loc[g.DPD_Days.ge(90),'EAD_EUR'].sum()/g.EAD_EUR.sum()}),include_groups=False).reset_index(drop=True)
-    long=vintage.melt('Suteikimo metai',value_vars=['Probleminių paskolų dalis','Daugiau kaip 90 dienų vėlavimo dalis'],var_name='Rodiklis',value_name='Dalis')
-    fig=px.line(long,x='Suteikimo metai',y='Dalis',color='Rodiklis',markers=True,title='Rizikos kokybė pagal paskolos suteikimo metus')
-    fig.update_yaxes(tickformat='.1%',title='Kredito pozicijos dalis')
-    st.plotly_chart(style_fig(fig,410),use_container_width=True)
-    explain('Kaip skaityti: jei jaunesnių suteikimo metų linijos yra aukščiau, naujesnės paskolos šiuo metu pasižymi didesne rizika. ECB vertina ne tik NPL dydį, bet ir jo sudėtį pagal paskolų suteikimo kartas. citeturn511280view0turn562348search9')
-
-    section('3. Ką reikštų ekonomikos pablogėjimas?','Streso testas skirtas atsakyti į praktinį klausimą: kiek padidėtų tikėtinas kredito nuostolis, jeigu rizikos parametrai pablogėtų.')
-    scenario=st.selectbox('Ekonominis scenarijus',stress['Scenario'].astype(str).tolist(),index=min(2,max(0,len(stress)-1)))
-    sc=stress[stress['Scenario'].astype(str).eq(scenario)].iloc[0]
-    stressed_pd=(latest['PD_12M']*sc['PD_Multiplier']).clip(upper=1)
-    stressed_lgd=(latest['LGD']+sc['LGD_Add']).clip(upper=1)
-    stressed_ead=latest['EAD_EUR']*(1+sc['EAD_Growth_pct'])
-    stressed_loss=(stressed_pd*stressed_lgd*stressed_ead).sum()
-    increase=stressed_loss/ecl-1 if ecl else np.nan
-    cols=st.columns(5)
-    vals=[('Dabartinis tikėtinas kredito nuostolis',eur(ecl),'dabartinė padėtis'),('Nuostolis po scenarijaus',eur(stressed_loss),scenario),('Nuostolio padidėjimas',pct(increase),'palyginti su dabartiniu'),('Nedarbo lygio šokas',f'{sc["Unemployment_Shock_pp"]:+.1f} proc. punkto','scenarijaus prielaida'),('Būsto kainų šokas',f'{sc["House_Price_Shock_pct"]:+.1%}','scenarijaus prielaida')]
-    for c,v in zip(cols,vals):
-        with c:kpi(*v)
-    stress_df=latest[['Loan_ID','Customer_Segment','EAD_EUR','ECL_EUR']].copy()
-    stress_df['Nuostolis po scenarijaus']=stressed_pd*stressed_lgd*stressed_ead
-    stress_df['Papildomas nuostolis']=stress_df['Nuostolis po scenarijaus']-stress_df['ECL_EUR']
-    seg=stress_df.groupby('Customer_Segment',as_index=False)[['ECL_EUR','Nuostolis po scenarijaus']].sum().melt('Customer_Segment',var_name='Būsena',value_name='Nuostolis')
-    seg['Būsena']=seg['Būsena'].replace({'ECL_EUR':'Dabartinis tikėtinas kredito nuostolis'})
-    fig=px.bar(seg,x='Customer_Segment',y='Nuostolis',color='Būsena',barmode='group',title='Tikėtino kredito nuostolio palyginimas pagal klientų segmentą',labels={'Customer_Segment':'Klientų segmentas','Nuostolis':'Eurai'})
-    st.plotly_chart(style_fig(fig,410),use_container_width=True)
-    explain('Kaip skaityti: kiekviename segmente lyginamas dabartinis nuostolis su nuostoliu po pasirinkto scenarijaus. Tai padeda nustatyti, kuris verslo segmentas labiausiai jautrus ekonominiam pablogėjimui. ECB kredito rizikos vertinimas apima forward-looking perspektyvą ir išorinių ekonominių veiksnių poveikį. citeturn511280view0')
-    top=stress_df.nlargest(15,'Papildomas nuostolis').merge(loans[['Loan_ID','Product_Name']],on='Loan_ID',how='left')
-    st.dataframe(top[['Loan_ID','Product_Name','Customer_Segment','EAD_EUR','ECL_EUR','Nuostolis po scenarijaus','Papildomas nuostolis']].rename(columns={'Loan_ID':'Paskola','Product_Name':'Produktas','Customer_Segment':'Klientų segmentas','EAD_EUR':'Kredito pozicija','ECL_EUR':'Dabartinis tikėtinas kredito nuostolis'}),use_container_width=True,hide_index=True)
+        top=stressed.nlargest(10,"Papildomas nuostolis")[[c for c in ["Loan_ID","Customer_ID","Product","EAD_EUR","Papildomas nuostolis"] if c in stressed.columns]]
+        st.dataframe(top,use_container_width=True,hide_index=True)
