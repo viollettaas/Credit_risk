@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_FILE = "credit_risk_test_data_baltic.xlsx"
+DATA_DIR = BASE_DIR / "data"
 
 # =========================
 # Vizualinis stilius
@@ -145,13 +145,21 @@ def find_data_file():
 @st.cache_data
 
 def load_data():
-    path = find_data_file()
-    if path is None:
-        st.error(f"Nerastas {DATA_FILE}. Įkelkite jį į tą patį GitHub projektą kaip app.py.")
-        st.stop()
-    xl = pd.ExcelFile(path)
-    return {s: pd.read_excel(xl, sheet_name=s) for s in xl.sheet_names}
-
+    files = {
+        "Customers": DATA_DIR / "customers.csv",
+        "Loans": DATA_DIR / "loans.csv",
+        "Loan_Snapshot": DATA_DIR / "loan_snapshot.csv",
+        "Customer_Financials": DATA_DIR / "customer_financials.csv",
+        "Collateral": DATA_DIR / "collateral.csv",
+        "Payments": DATA_DIR / "payments.csv",
+        "Macro": DATA_DIR / "macro.csv",
+        "Risk_Appetite": DATA_DIR / "risk_limits.csv",
+    }
+    required = {k: v for k, v in files.items() if k != "Risk_Appetite"}
+    missing = [p.name for p in required.values() if not p.exists()]
+    if missing:
+        raise FileNotFoundError("Truksta duomenu failu data aplanke: " + ", ".join(missing))
+    return {name: pd.read_csv(path, encoding="utf-8-sig", low_memory=False) for name, path in files.items() if path.exists()}
 
 D = load_data()
 loans = D.get("Loans", pd.DataFrame()).copy()
