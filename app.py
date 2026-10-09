@@ -113,53 +113,68 @@ def fig_style(fig, height=360):
 
 
 def find_data_file():
+    """Look for valid loan workbooks including browser-added (3) suffixes."""
+    import zipfile
+    folders = [BASE_DIR, BASE_DIR / "data", BASE_DIR.parent]
     candidates = []
-    for root in [BASE_DIR, Path.cwd()]:
-        if not root.exists():
-            continue
-        exact = root / DATA_FILE
-        if exact.is_file():
-            candidates.append(exact)
+    for folder in folders:
+        if folder.is_dir():
+            candidates += list(folder.glob("*.xlsx")) + list(folder.glob("*.xlsm"))
+    candidates = sorted(set(candidates), key=lambda p: (
+        0 if "baltic" in p.name.lower() else 1,
+        0 if "credit_risk" in p.name.lower() else 1,
+        p.name.lower(),
+    ))
+    for path in candidates:
         try:
-            candidates.extend([p for p in root.rglob("*.xlsx") if p.is_file() and p.name.lower() == DATA_FILE.lower()])
+            if not zipfile.is_zipfile(path):
+                continue
+            with pd.ExcelFile(path, engine="openpyxl") as book:
+                if {"Customers", "Loans", "Loan_Snapshot"}.issubset(book.sheet_names):
+                    return path
         except Exception:
             pass
-    if candidates:
-        return candidates[0]
-    all_xlsx = []
-    for root in [BASE_DIR, Path.cwd()]:
-        try:
-            all_xlsx.extend([p for p in root.rglob("*.xlsx") if p.is_file() and not p.name.startswith("~$")])
-        except Exception:
-            pass
-    uniq, seen = [], set()
-    for p in all_xlsx:
-        key = str(p.resolve())
-        if key not in seen:
-            seen.add(key); uniq.append(p)
-    if len(uniq) == 1:
-        return uniq[0]
     return None
 
 
-@st.cache_data
+# Optional direct upload: does not depend on GitHub file names or folder paths.
+with st.sidebar:
+    st.markdown("### Duomenų šaltinis")
+    uploaded_workbook = st.file_uploader(
+        "Įkelti banko Excel duomenis (nebūtina, jei failas GitHub)",
+        type=["xlsx", "xlsm"],
+        key="bank_workbook_upload",
+    )
+
+
+@st.cache_data(show_spinner="Įkeliami banko duomenys...")
+def read_workbook(raw_bytes):
+    import io
+    with pd.ExcelFile(io.BytesIO(raw_bytes), engine="openpyxl") as book:
+        required = {"Customers", "Loans", "Loan_Snapshot"}
+        if not required.issubset(set(book.sheet_names)):
+            raise ValueError("Excel trūksta lapų: " + ", ".join(sorted(required - set(book.sheet_names))))
+        return {sheet: pd.read_excel(book, sheet_name=sheet)
+                for sheet in book.sheet_names if sheet not in {"README", "Data_Dictionary"}}
+
 
 def load_data():
-    files = {
-        "Customers": DATA_DIR / "customers.csv",
-        "Loans": DATA_DIR / "loans.csv",
-        "Loan_Snapshot": DATA_DIR / "loan_snapshot.csv",
-        "Customer_Financials": DATA_DIR / "customer_financials.csv",
-        "Collateral": DATA_DIR / "collateral.csv",
-        "Payments": DATA_DIR / "payments.csv",
-        "Macro": DATA_DIR / "macro.csv",
-        "Risk_Appetite": DATA_DIR / "risk_limits.csv",
-    }
-    required = {k: v for k, v in files.items() if k != "Risk_Appetite"}
-    missing = [p.name for p in required.values() if not p.exists()]
-    if missing:
-        raise FileNotFoundError("Truksta duomenu failu data aplanke: " + ", ".join(missing))
-    return {name: pd.read_csv(path, encoding="utf-8-sig", low_memory=False) for name, path in files.items() if path.exists()}
+    if uploaded_workbook is not None:
+        try:
+            return read_workbook(uploaded_workbook.getvalue())
+        except Exception as exc:
+            st.error(f"Nepavyko perskaityti įkelto Excel: {exc}")
+            st.stop()
+    path = find_data_file()
+    if path is None:
+        st.error("GitHub projekte nerastas tinkamas banko Excel failas. Įkelk savo Excel kairėje esančiame laukelyje.")
+        st.caption("Patikrinti failai: " + ", ".join(str(p.relative_to(BASE_DIR)) for p in BASE_DIR.rglob("*.xlsx")))
+        st.stop()
+    try:
+        return read_workbook(path.read_bytes())
+    except Exception as exc:
+        st.error(f"Nepavyko atidaryti {path.name}: {exc}")
+        st.stop()
 
 D = load_data()
 loans = D.get("Loans", pd.DataFrame()).copy()
@@ -576,4 +591,3 @@ else:
         q("Kurios paskolos labiausiai paveiktų banką?", "Pateikiamos pozicijos, kurioms scenarijus sugeneruotų didžiausią papildomą nuostolį.")
         cols = [c for c in ["Loan_ID","Customer_ID","Product_Name","Country","EAD_EUR","PD_12M","LGD","Papildomas prognozuojamas nuostolis"] if c in stress.columns]
         st.dataframe(stress.nlargest(15,"Papildomas prognozuojamas nuostolis")[cols], use_container_width=True, hide_index=True)
-
