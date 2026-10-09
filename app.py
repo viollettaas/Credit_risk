@@ -33,17 +33,12 @@ div[data-testid="stAlert"]{border-radius:12px}
 
 @st.cache_data(show_spinner="Loading bank data...")
 def load_data():
+    # Read the same workbook that the previously working Lithuanian app used.
+    # Streamlit Cloud checks out the repository to a local filesystem.
     path = ROOT / EXCEL_NAME
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing from GitHub repository root: {EXCEL_NAME}. Available files: {', '.join(sorted(p.name for p in ROOT.iterdir() if p.is_file()))}")
-    # Excel workbooks are ZIP containers. Fail clearly for Git LFS pointers or HTML placeholders.
-    import zipfile
-    if not zipfile.is_zipfile(path):
-        with path.open("rb") as fh:
-            beginning = fh.read(180).decode("utf-8", errors="replace")
-        if beginning.startswith("version https://git-lfs.github.com/spec/v1"):
-            raise ValueError("GitHub contains a Git LFS pointer instead of the Excel workbook. Upload the actual .xlsx file or configure Git LFS for deployment.")
-        raise ValueError("The repository file is not a valid .xlsx workbook (first bytes: " + repr(beginning[:80]) + "). Please replace the GitHub file with the actual workbook.")
+    if not path.exists():
+        st.error(f"The workbook {EXCEL_NAME} is missing beside app.py.")
+        st.stop()
     with pd.ExcelFile(path, engine="openpyxl") as xls:
         required = ["Customers", "Loans", "Loan_Snapshot", "Underwriting", "Customer_Financials", "Stress_Scenarios"]
         missing = [s for s in required if s not in xls.sheet_names]
