@@ -576,3 +576,4 @@ else:
         q("Kurios paskolos labiausiai paveiktų banką?", "Pateikiamos pozicijos, kurioms scenarijus sugeneruotų didžiausią papildomą nuostolį.")
         cols = [c for c in ["Loan_ID","Customer_ID","Product_Name","Country","EAD_EUR","PD_12M","LGD","Papildomas prognozuojamas nuostolis"] if c in stress.columns]
         st.dataframe(stress.nlargest(15,"Papildomas prognozuojamas nuostolis")[cols], use_container_width=True, hide_index=True)
+
