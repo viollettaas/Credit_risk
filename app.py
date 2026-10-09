@@ -33,9 +33,19 @@ div[data-testid="stAlert"]{border-radius:12px}
 
 @st.cache_data(show_spinner="Loading bank data...")
 def load_data():
+    # Read the same workbook that the previously working Lithuanian app used.
+    # Streamlit Cloud checks out the repository to a local filesystem.
     path = ROOT / EXCEL_NAME
     if not path.is_file():
-        raise FileNotFoundError(f"Missing from GitHub repository root: {EXCEL_NAME}. Available files: {', '.join(sorted(p.name for p in ROOT.iterdir() if p.is_file()))}")
+        raise FileNotFoundError(f"Excel workbook not found next to app.py: {path.name}")
+    # A deployed Streamlit app runs inside a checkout of the GitHub repository.
+    # Therefore this path is already the GitHub-tracked file, not a user upload.
+    from zipfile import is_zipfile
+    if not is_zipfile(path):
+        header = path.read_bytes()[:120]
+        if b"git-lfs.github.com/spec" in header:
+            raise ValueError("GitHub contains a Git LFS pointer instead of the Excel workbook. The actual workbook must be committed to the repository.")
+        raise ValueError("The GitHub-tracked file is not a valid Excel workbook. Please check the file stored in GitHub, not the file name.")
     with pd.ExcelFile(path, engine="openpyxl") as xls:
         required = ["Customers", "Loans", "Loan_Snapshot", "Underwriting", "Customer_Financials", "Stress_Scenarios"]
         missing = [s for s in required if s not in xls.sheet_names]
@@ -80,7 +90,7 @@ try:
 except Exception as exc:
     st.error("Unable to load Excel data from GitHub.")
     st.code(str(exc))
-    st.info(f"Place this file alongside app.py in the GitHub repository: {EXCEL_NAME}. Do not place it in the data folder.")
+    st.info(f"Expected GitHub repository file: {EXCEL_NAME} (in the same directory as app.py).")
     st.stop()
 
 S = D["Loan_Snapshot"]
