@@ -1,297 +1,578 @@
-# -*- coding: utf-8 -*-
-"""Baltic Bank | Chief Risk Officer dashboard. Data: Excel in repository root."""
 from pathlib import Path
-import html
-import numpy as np
+import math
 import pandas as pd
+import numpy as np
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
 
-st.set_page_config(page_title="Baltic Bank | Credit Risk Management", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
-ROOT = Path(__file__).resolve().parent
-EXCEL_NAME = "credit_risk_test_data_baltic.xlsx"
-COUNTRIES = {"LT": "Lithuania", "LV": "Latvia", "EE": "Estonia", "Lietuva": "Lithuania", "Latvija": "Latvia", "Estija": "Estonia", "Lithuania": "Lithuania", "Latvia": "Latvia", "Estonia": "Estonia"}
-COLORS = {"Lithuania": "#1468C7", "Latvia": "#00A6A0", "Estonia": "#F4A340"}
-PAGES = ["Executive Overview", "Baltic Country Risk", "Portfolio & Borrowers", "Customer Profile", "Risk Trends & Scenarios"]
+st.set_page_config(
+    page_title="Banko kredito rizikos ataskaita",
+    page_icon="🏦",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-st.markdown('''<style>
-.stApp{background:#F7F9FC;color:#0A213C}.block-container{padding-top:1.5rem;max-width:1500px}
-section[data-testid="stSidebar"]{background:linear-gradient(160deg,#0C356B,#061D3A 50%,#03162D)}
-section[data-testid="stSidebar"] *{color:#F5F9FF}
-section[data-testid="stSidebar"] [data-baseweb="select"] *,section[data-testid="stSidebar"] [data-baseweb="input"] *{color:#0A213C!important}
-h1,h2,h3{color:#0A213C!important;letter-spacing:-.035em}
-h1{font-size:2.1rem!important}h2{font-size:1.45rem!important}
-[data-testid="stMetric"]{background:white;border:1px solid #E4EAF2;border-radius:16px;padding:16px 18px;box-shadow:0 4px 18px #0A27400B}
-[data-testid="stMetricLabel"]{font-size:.86rem!important;color:#60758F!important}
-[data-testid="stMetricValue"]{font-size:1.55rem!important;color:#0B2E57!important}
-[data-testid="stPlotlyChart"]{background:#fff;border:1px solid #E7EDF5;border-radius:15px;padding:6px}
-div[data-testid="stAlert"]{border-radius:12px}
-.note{padding:13px 16px;background:#EFF5FC;border-left:3px solid #2276CE;border-radius:8px;color:#35506E;margin:5px 0 18px}
-.eyebrow{font-size:.75rem;font-weight:800;letter-spacing:.14em;color:#4380BC;text-transform:uppercase}
-</style>''', unsafe_allow_html=True)
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
 
-@st.cache_data(show_spinner="Loading bank data...")
-def load_data():
-    # Read the same workbook that the previously working Lithuanian app used.
-    # Streamlit Cloud checks out the repository to a local filesystem.
-    path = ROOT / EXCEL_NAME
-    if not path.exists():
-        st.error(f"The workbook {EXCEL_NAME} is missing beside app.py.")
-        st.stop()
-    with pd.ExcelFile(path, engine="openpyxl") as xls:
-        required = ["Customers", "Loans", "Loan_Snapshot", "Underwriting", "Customer_Financials", "Stress_Scenarios"]
-        missing = [s for s in required if s not in xls.sheet_names]
-        if missing:
-            raise ValueError("Missing Excel worksheets: " + ", ".join(missing))
-        tables = {s: pd.read_excel(xls, sheet_name=s) for s in required}
-        for s in ["Payments", "Collateral", "Default_Events", "Collections", "Macro"]:
-            tables[s] = pd.read_excel(xls, sheet_name=s) if s in xls.sheet_names else pd.DataFrame()
-    for key in ["Loans", "Loan_Snapshot", "Customers"]:
-        tables[key].columns = tables[key].columns.str.strip()
-    for key, datecols in {"Loans":["Origination_Date"],"Loan_Snapshot":["Snapshot_Date"],"Customer_Financials":["Snapshot_Date"],"Payments":["Due_Date"],"Default_Events":["Default_Date"]}.items():
-        for col in datecols:
-            if col in tables[key].columns:
-                tables[key][col] = pd.to_datetime(tables[key][col], errors="coerce")
-    for key in ["Customers", "Loans", "Loan_Snapshot", "Underwriting"]:
-        if "Country" in tables[key].columns:
-            tables[key]["Country"] = tables[key]["Country"].map(lambda x: COUNTRIES.get(str(x).strip(), str(x).strip()))
-    loans = tables["Loans"]
-    snaps = tables["Loan_Snapshot"]
-    needed = ["Loan_ID", "Product_Name", "Origination_Date", "Original_Amount_EUR", "Interest_Rate", "Down_Payment_Pct", "Down_Payment_EUR", "Customer_ID", "Country"]
-    for col in needed:
-        if col not in loans.columns:
-            raise ValueError(f"Missing required Loans column: {col}")
-    for col in ["Snapshot_Date", "Loan_ID", "EAD_EUR", "IFRS9_Stage", "DPD_Days", "ECL_EUR"]:
-        if col not in snaps.columns:
-            raise ValueError(f"Missing required Loan_Snapshot column: {col}")
-    extra = loans[["Loan_ID", "Product_Name", "Origination_Date", "Original_Amount_EUR", "Interest_Rate", "Down_Payment_Pct", "Down_Payment_EUR"]].drop_duplicates("Loan_ID")
-    snaps = snaps.drop(columns=[c for c in extra.columns if c != "Loan_ID" and c in snaps.columns], errors="ignore").merge(extra, on="Loan_ID", how="left", validate="many_to_one")
-    for col in ["EAD_EUR", "ECL_EUR", "DPD_Days", "IFRS9_Stage", "PD_12M", "LGD", "Current_LTV"]:
-        if col in snaps.columns:
-            snaps[col] = pd.to_numeric(snaps[col], errors="coerce")
-    snaps["Country"] = snaps["Country"].map(lambda x: COUNTRIES.get(str(x).strip(), str(x).strip()))
-    snaps["Month"] = snaps["Snapshot_Date"].dt.to_period("M").dt.to_timestamp()
-    snaps["Problem_EAD"] = np.where(snaps["IFRS9_Stage"].eq(3), snaps["EAD_EUR"], 0)
-    snaps["Elevated_EAD"] = np.where(snaps["IFRS9_Stage"].eq(2), snaps["EAD_EUR"], 0)
-    snaps["Late90_EAD"] = np.where(snaps["DPD_Days"].ge(90), snaps["EAD_EUR"], 0)
-    tables["Loan_Snapshot"] = snaps
-    return tables
+# =========================
+# Vizualinis stilius
+# =========================
+CSS = """
+<style>
+.stApp { background: #ffffff; }
+.block-container { padding-top: 1.1rem; padding-left: 2rem; padding-right: 2rem; max-width: 100% !important; }
+section[data-testid="stSidebar"] {
+    background: radial-gradient(circle at top left, #0c356b 0%, #061d3a 35%, #03162d 100%) !important;
+    min-width: 340px !important; max-width: 340px !important;
+}
+section[data-testid="stSidebar"] * { color: #ffffff; }
+section[data-testid="stSidebar"] input,
+section[data-testid="stSidebar"] textarea,
+section[data-testid="stSidebar"] [data-baseweb="select"] {
+    color: #061b34 !important; background: #ffffff !important;
+}
+.sidebar-title { font-size: 22px; font-weight: 900; margin-bottom: 8px; }
+.sidebar-sub { color: #b8c9df !important; font-size: 13px; margin-bottom: 20px; }
+.side-card { background: rgba(255,255,255,0.055); border: 1px solid rgba(157,190,230,.28); border-radius: 17px; padding: 16px; margin-bottom: 16px; }
+.kpi { background: #ffffff; border: 1px solid #e5eaf1; border-radius: 17px; padding: 17px 18px; box-shadow: 0 8px 28px rgba(15,42,75,.07); height: 100%; }
+.kpi-label { color: #6a7a90; font-size: 12px; text-transform: uppercase; font-weight: 800; letter-spacing: .04em; }
+.kpi-value { color: #071a33; font-size: 27px; line-height: 1.1; font-weight: 900; margin-top: 6px; }
+.kpi-sub { color: #6a7a90; font-size: 13px; margin-top: 6px; }
+.kpi-red { border-top: 4px solid #d14343; }
+.kpi-amber { border-top: 4px solid #e39a22; }
+.kpi-green { border-top: 4px solid #14966d; }
+.kpi-blue { border-top: 4px solid #1478ff; }
+.question-title { font-size: 22px; font-weight: 900; color: #071a33; margin: 16px 0 4px; }
+.question-sub { font-size: 14px; color: #65758b; margin-bottom: 14px; }
+.note { background: #f5f8fc; border-left: 4px solid #1478ff; border-radius: 10px; padding: 10px 12px; color: #4c5c70; font-size: 13px; margin: 8px 0 16px; }
+.alert { border-radius: 15px; padding: 14px 16px; margin: 9px 0; border: 1px solid #e5eaf1; background: #ffffff; }
+.alert-red { border-left: 5px solid #d14343; }
+.alert-amber { border-left: 5px solid #e39a22; }
+.alert-green { border-left: 5px solid #14966d; }
+.alert-title { font-weight: 900; color: #071a33; }
+.alert-text { color: #4c5c70; font-size: 14px; line-height: 1.45; margin-top: 4px; }
+.big-status { border-radius: 18px; padding: 18px 20px; border: 1px solid #e5eaf1; background:#fff; }
+.big-status-red { border-left: 7px solid #d14343; }
+.big-status-amber { border-left: 7px solid #e39a22; }
+.big-status-green { border-left: 7px solid #14966d; }
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
-try:
-    D = load_data()
-except Exception as exc:
-    st.error("Unable to load Excel data from GitHub.")
-    st.code(str(exc))
-    st.info(f"Place this file alongside app.py in the GitHub repository: {EXCEL_NAME}. Do not place it in the data folder.")
-    st.stop()
 
-S = D["Loan_Snapshot"]
-LOANS = D["Loans"]
-CUSTOMERS = D["Customers"]
-LATEST_DATE = S["Snapshot_Date"].dropna().max()
-if pd.isna(LATEST_DATE):
-    st.error("No valid dates found in monthly loan data.")
-    st.stop()
+def money(v, decimals=1):
+    if pd.isna(v):
+        return "–"
+    v = float(v)
+    if abs(v) >= 1_000_000:
+        return f"{v/1_000_000:.{decimals}f} mln. €"
+    if abs(v) >= 1_000:
+        return f"{v/1_000:.{decimals}f} tūkst. €"
+    return f"{v:,.0f} €".replace(",", " ")
 
-with st.sidebar:
-    st.markdown("## ◈ BALTIC BANK")
-    st.caption("CHIEF RISK OFFICER · MANAGEMENT REPORT")
-    page = st.radio("Report section", PAGES, label_visibility="collapsed")
-    st.divider()
-    selected_countries = st.multiselect("Countries", ["Lithuania", "Latvia", "Estonia"], default=["Lithuania", "Latvia", "Estonia"])
-    st.caption("Synthetic demonstration data; not actual bank reporting.")
-    st.caption(f"Reporting date: {LATEST_DATE:%Y-%m-%d}")
-if not selected_countries:
-    st.warning("Select at least one country.")
-    st.stop()
 
-S = S[S["Country"].isin(selected_countries)].copy()
-LOANS = LOANS[LOANS["Country"].isin(selected_countries)].copy()
-CUSTOMERS = CUSTOMERS[CUSTOMERS["Country"].isin(selected_countries)].copy()
-latest = S[S["Snapshot_Date"].eq(LATEST_DATE)].copy()
-if latest.empty:
-    st.warning("No observations for selected countries at the latest reporting date.")
-    st.stop()
+def pct(v, decimals=1):
+    if pd.isna(v):
+        return "–"
+    return f"{float(v)*100:.{decimals}f}%"
 
-fmt_eur = lambda x: f"{x/1e6:,.2f} million EUR".replace(",", " ") if abs(x)>=1e6 else f"{x:,.0f} €".replace(",", " ")
-fmt_pct = lambda x: f"{100*x:.1f} %" if pd.notna(x) else "–"
-ratio = lambda a,b: float(a/b) if b else 0.0
 
-def title(text, subtitle):
-    st.markdown('<div class="eyebrow">Baltic Bank / Risk intelligence</div>', unsafe_allow_html=True)
-    st.title(text)
-    st.caption(subtitle)
+def num(s, default=np.nan):
+    return pd.to_numeric(s, errors="coerce") if s is not None else pd.Series(dtype=float)
 
-def section(text, expl):
-    st.subheader(text)
-    st.markdown(f'<div class="note">{html.escape(expl)}</div>', unsafe_allow_html=True)
 
-def plot(fig, height=350, percent=False):
-    fig.update_layout(template="plotly_white", height=height, margin=dict(l=20,r=20,t=45,b=30), font=dict(family="Arial",size=12,color="#244260"), title_font=dict(size=16,color="#0B2E57"), legend_title_text="", paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF")
+def q(title, subtitle):
+    st.markdown(f"<div class='question-title'>{title}</div><div class='question-sub'>{subtitle}</div>", unsafe_allow_html=True)
+
+
+def alert(kind, title, text):
+    st.markdown(f"<div class='alert alert-{kind}'><div class='alert-title'>{title}</div><div class='alert-text'>{text}</div></div>", unsafe_allow_html=True)
+
+
+def kpi(label, value, sub="", status="blue"):
+    st.markdown(
+        f"<div class='kpi kpi-{status}'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div><div class='kpi-sub'>{sub}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def fig_style(fig, height=360):
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=10, r=10, t=50, b=20),
+        font=dict(family="Arial", color="#071a33"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        hoverlabel=dict(bgcolor="white"),
+    )
     fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(gridcolor="#E9EFF6")
-    if percent: fig.update_yaxes(tickformat=".0%")
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False})
+    fig.update_yaxes(gridcolor="#edf1f6", zeroline=False)
+    return fig
 
-def country_table(df):
-    if df.empty: return pd.DataFrame()
-    g = df.groupby("Country", as_index=False).agg(Exposure=("EAD_EUR","sum"),Problem=("Problem_EAD","sum"),Elevated=("Elevated_EAD","sum"),Late90=("Late90_EAD","sum"),Loss=("ECL_EUR","sum"),Loans=("Loan_ID","nunique"))
-    g["Non-performing loans"] = g["Problem"] / g["Exposure"].replace(0,np.nan)
-    g["Loans with increased credit risk"] = g["Elevated"] / g["Exposure"].replace(0,np.nan)
-    g["At least 90 days past due"] = g["Late90"] / g["Exposure"].replace(0,np.nan)
-    return g
 
-def kpis(df):
-    exposure=df["EAD_EUR"].sum(); problem=df["Problem_EAD"].sum(); elevated=df["Elevated_EAD"].sum(); late=df["Late90_EAD"].sum(); loss=df["ECL_EUR"].sum()
-    cols=st.columns(5)
-    for col, label, value in zip(cols,["Loan portfolio", "Non-performing loans", "Loans with increased credit risk", "Loans at least 90 days past due", "Expected credit losses"],[fmt_eur(exposure),fmt_pct(ratio(problem,exposure)),fmt_pct(ratio(elevated,exposure)),fmt_pct(ratio(late,exposure)),fmt_eur(loss)]):
-        col.metric(label,value)
+def find_data_file():
+    candidates = []
+    for root in [BASE_DIR, Path.cwd()]:
+        if not root.exists():
+            continue
+        exact = root / DATA_FILE
+        if exact.is_file():
+            candidates.append(exact)
+        try:
+            candidates.extend([p for p in root.rglob("*.xlsx") if p.is_file() and p.name.lower() == DATA_FILE.lower()])
+        except Exception:
+            pass
+    if candidates:
+        return candidates[0]
+    all_xlsx = []
+    for root in [BASE_DIR, Path.cwd()]:
+        try:
+            all_xlsx.extend([p for p in root.rglob("*.xlsx") if p.is_file() and not p.name.startswith("~$")])
+        except Exception:
+            pass
+    uniq, seen = [], set()
+    for p in all_xlsx:
+        key = str(p.resolve())
+        if key not in seen:
+            seen.add(key); uniq.append(p)
+    if len(uniq) == 1:
+        return uniq[0]
+    return None
 
-def monthly(df):
-    g=df.groupby("Month",as_index=False)[["EAD_EUR","Problem_EAD","Elevated_EAD","Late90_EAD","ECL_EUR"]].sum().sort_values("Month")
-    for num,name in [("Problem_EAD","Non-performing"),("Elevated_EAD","Increased credit risk"),("Late90_EAD","90+ days past due")]:
-        g[name]=g[num]/g["EAD_EUR"].replace(0,np.nan)
-    return g
 
-if page == "Executive Overview":
-    title("Credit Risk | Executive Overview", "Consolidated credit risk report for one Baltic bank: emerging deterioration, concentrations and management priorities.")
-    kpis(latest)
-    m=monthly(S)
-    section("Is credit quality deteriorating?", "The lines show the exposure-weighted share of non-performing loans, increased-risk loans and loans at least 90 days past due. An upward trend signals deterioration.")
-    long=m.melt(id_vars="Month",value_vars=["Non-performing","Increased credit risk","90+ days past due"],var_name="Indicator",value_name="Share")
-    plot(px.line(long,x="Month",y="Share",color="Indicator",markers=True,title="Monthly credit quality trends"),percent=True)
-    g=country_table(latest)
-    a,b=st.columns(2)
-    with a:
-        section("Which country has the largest loan exposure?", "Outstanding exposure, rather than number of loans, reveals geographic concentration.")
-        plot(px.bar(g,x="Country",y="Exposure",color="Country",color_discrete_map=COLORS,title="Loan exposure by country (EUR)"))
-    with b:
-        section("Which country has the highest non-performing loan ratio?", "Non-performing exposure divided by each country’s total exposure enables comparison across different-sized portfolios.")
-        plot(px.bar(g,x="Country",y="Non-performing loans",color="Country",color_discrete_map=COLORS,title="Non-performing loan ratio"),percent=True)
-    section("Where should management focus?", "The largest problematic exposures are monitoring priorities, not automated lending decisions.")
-    risk=latest.sort_values(["Problem_EAD","ECL_EUR"],ascending=False).head(15)
-    st.dataframe(risk[["Loan_ID","Country","Product_Name","EAD_EUR","DPD_Days","ECL_EUR"]].rename(columns={"Loan_ID":"Loan","Country":"Country","Product_Name":"Product","EAD_EUR":"Credit exposure (EUR)","DPD_Days":"Days past due","ECL_EUR":"Expected credit loss (EUR)"}),use_container_width=True,hide_index=True)
+@st.cache_data
 
-elif page == "Baltic Country Risk":
-    title("Baltic Country Risk Comparison", "Lithuania, Latvia and Estonia: exposure, credit quality and monthly trends.")
-    g=country_table(latest)
-    st.dataframe(g[["Country","Exposure","Loans","Non-performing loans","Loans with increased credit risk","At least 90 days past due","Loss"]].rename(columns={"Country":"Country","Exposure":"Outstanding loans (EUR)","Loans":"Number of loans","Loss":"Expected credit loss (EUR)"}).style.format({"Outstanding loans (EUR)":"{:,.0f}","Expected credit loss (EUR)":"{:,.0f}","Non-performing loans":"{:.1%}","Loans with increased credit risk":"{:.1%}","At least 90 days past due":"{:.1%}"}),use_container_width=True,hide_index=True)
-    a,b=st.columns(2)
-    with a:
-        section("How is the portfolio distributed?", "Each country’s share of the selected bank portfolio.")
-        plot(px.pie(g,names="Country",values="Exposure",hole=.55,color="Country",color_discrete_map=COLORS,title="Loan portfolio distribution"))
-    with b:
-        section("Which country has the highest credit risk?", "This chart compares non-performing loans and loans with increased credit risk as shares of country exposure.")
-        q=g.melt(id_vars="Country",value_vars=["Non-performing loans","Loans with increased credit risk"],var_name="Risk category",value_name="Share")
-        plot(px.bar(q,x="Country",y="Share",color="Risk category",barmode="group",title="Credit quality by country"),percent=True)
-    section("How is the non-performing loan ratio changing by country?", "Each monthly ratio is calculated as non-performing exposure divided by total country exposure.")
-    c=S.groupby(["Month","Country"],as_index=False)[["EAD_EUR","Problem_EAD"]].sum()
-    c["Share"]=c["Problem_EAD"]/c["EAD_EUR"].replace(0,np.nan)
-    plot(px.line(c,x="Month",y="Share",color="Country",color_discrete_map=COLORS,markers=True,title="Non-performing loan ratio by country"),percent=True)
-    section("Which country-product combinations carry the most risk?", "Non-performing exposure shows the absolute amount of credit at risk.")
-    p=latest.groupby(["Country","Product_Name"],as_index=False)[["EAD_EUR","Problem_EAD"]].sum()
-    p["Share"]=p["Problem_EAD"]/p["EAD_EUR"].replace(0,np.nan)
-    plot(px.bar(p,x="Product_Name",y="Problem_EAD",color="Country",barmode="group",color_discrete_map=COLORS,title="Non-performing exposure by product and country"),420)
+def load_data():
+    files = {
+        "Customers": DATA_DIR / "customers.csv",
+        "Loans": DATA_DIR / "loans.csv",
+        "Loan_Snapshot": DATA_DIR / "loan_snapshot.csv",
+        "Customer_Financials": DATA_DIR / "customer_financials.csv",
+        "Collateral": DATA_DIR / "collateral.csv",
+        "Payments": DATA_DIR / "payments.csv",
+        "Macro": DATA_DIR / "macro.csv",
+        "Risk_Appetite": DATA_DIR / "risk_limits.csv",
+    }
+    required = {k: v for k, v in files.items() if k != "Risk_Appetite"}
+    missing = [p.name for p in required.values() if not p.exists()]
+    if missing:
+        raise FileNotFoundError("Truksta duomenu failu data aplanke: " + ", ".join(missing))
+    return {name: pd.read_csv(path, encoding="utf-8-sig", low_memory=False) for name, path in files.items() if path.exists()}
 
-elif page == "Portfolio & Borrowers":
-    title("Portfolio & Borrower Insights", "Who borrows, when, how much and with what equity contribution.")
-    section("When are most loans originated?", "New loans are counted by origination month, not repeated monthly outstanding balances.")
-    l=LOANS.copy();l["Month"]=pd.to_datetime(l["Origination_Date"],errors="coerce").dt.to_period("M").dt.to_timestamp()
-    orig=l.groupby(["Month","Country"],as_index=False).agg(Count=("Loan_ID","nunique"),Amount=("Original_Amount_EUR","sum"))
-    plot(px.bar(orig,x="Month",y="Count",color="Country",color_discrete_map=COLORS,barmode="group",title="Monthly new loan originations"),410)
-    a,b=st.columns(2)
-    with a:
-        section("What is the age distribution of borrowers?", "Unique borrowers are counted once, even if they hold several loans.")
-        cs=CUSTOMERS.copy();cs["Age group"]=pd.cut(pd.to_numeric(cs["Age"],errors="coerce"),bins=[0,24,34,44,54,64,120],labels=["Under 25","25–34","35–44","45–54","55–64","65+"])
-        ag=cs.groupby("Age group",observed=True).size().reset_index(name="Customers")
-        plot(px.bar(ag,x="Age group",y="Customers",title="Borrower age distribution"))
-    with b:
-        section("What is the borrower gender distribution?", "This describes borrower composition, not creditworthiness. Gender must not be used for discriminatory credit decisions.")
-        sex=CUSTOMERS["Gender"].fillna("Not specified").value_counts().reset_index();sex.columns=["Gender","Customers"]
-        plot(px.pie(sex,names="Gender",values="Customers",hole=.55,title="Borrower distribution"))
-    section("How much equity do borrowers contribute?", "Only loans with meaningful down-payment data are included. The contribution is measured as a share of purchase price.")
-    d=l.copy();d["Down_Payment_Pct"]=pd.to_numeric(d["Down_Payment_Pct"],errors="coerce")
-    d=d[d["Down_Payment_Pct"].between(0,1)]
-    if not d.empty:
-        d["Down-payment band"]=pd.cut(d["Down_Payment_Pct"],bins=[-0.001,.10,.15,.20,.25,.30,.40,1.001],labels=["Under 10%","10–15 %","15–20 %","20–25 %","25–30 %","30–40 %","Over 40%"])
-        dp=d.groupby(["Down-payment band","Country"],observed=True).size().reset_index(name="Loans")
-        plot(px.bar(dp,x="Down-payment band",y="Loans",color="Country",color_discrete_map=COLORS,barmode="group",title="Down-payment distribution by country"),400)
-    section("Which loan products dominate?", "Outstanding balances reveal dependence on particular products and borrower groups.")
-    pr=latest.groupby("Product_Name",as_index=False)[["EAD_EUR","Problem_EAD"]].sum().sort_values("EAD_EUR",ascending=False)
-    plot(px.bar(pr,x="Product_Name",y="EAD_EUR",title="Outstanding loans by product"),400)
+D = load_data()
+loans = D.get("Loans", pd.DataFrame()).copy()
+snap = D.get("Loan_Snapshot", pd.DataFrame()).copy()
+customers = D.get("Customers", pd.DataFrame()).copy()
+financials = D.get("Customer_Financials", pd.DataFrame()).copy()
+payments = D.get("Payments", pd.DataFrame()).copy()
+underwriting = D.get("Underwriting", pd.DataFrame()).copy()
+risk_appetite = D.get("Risk_Appetite", pd.DataFrame()).copy()
+collateral = D.get("Collateral", pd.DataFrame()).copy()
+loan_events = D.get("Loan_Events", pd.DataFrame()).copy()
+collections = D.get("Collections", pd.DataFrame()).copy()
+defaults = D.get("Default_Events", pd.DataFrame()).copy()
 
-elif page == "Customer Profile":
-    title("Customer Credit Profile", "Individual loans, payment history and financial trends.")
-    st.info("The dataset contains synthetic personal identifiers. Search by personal code or customer identifier.")
-    search=st.text_input("Enter a personal code or customer identifier",placeholder="For example, Customer_ID or Personal_Code")
-    if not search:
-        st.caption("Enter an identifier to display the customer analysis.")
+for df in [loans, snap, customers, financials, payments, underwriting, collateral, loan_events, collections, defaults]:
+    for c in df.columns:
+        if c.endswith("Date") or c in ["Snapshot_Date", "Month", "Application_Date", "Due_Date", "Payment_Date", "Default_Date", "Event_Date"]:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+
+# -------------------------
+# Dabartinis portfelis
+# -------------------------
+if not snap.empty and "Snapshot_Date" in snap.columns:
+    latest_date = snap["Snapshot_Date"].max()
+    latest = snap[snap["Snapshot_Date"].eq(latest_date)].copy()
+else:
+    latest_date = pd.NaT
+    latest = pd.DataFrame()
+
+if not loans.empty and "Loan_ID" in loans.columns:
+    latest = latest.merge(
+        loans.drop_duplicates("Loan_ID"),
+        on=[c for c in ["Loan_ID"] if c in latest.columns],
+        how="left",
+        suffixes=("", "_loan"),
+    )
+
+# Jei susijungus atsirado Country_x / Country_loan, suvienodiname
+for target, candidates in {
+    "Country": ["Country", "Country_loan"],
+    "Product_Name": ["Product_Name", "Product_Name_loan"],
+    "Customer_Segment": ["Customer_Segment", "Customer_Segment_loan"],
+    "Region": ["Region", "Region_loan"],
+}.items():
+    if target not in latest.columns:
+        for c in candidates:
+            if c in latest.columns:
+                latest[target] = latest[c]
+                break
+
+country_names = {"LT": "Lietuva", "LV": "Latvija", "EE": "Estija"}
+
+# Sidebar
+with st.sidebar:
+    st.markdown("<div class='sidebar-title'>🏦 Kredito rizikos ataskaita</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sidebar-sub'>Vadovybės lygio banko kredito rizikos stebėsena</div>", unsafe_allow_html=True)
+    available_countries = [c for c in ["LT", "LV", "EE"] if c in set(loans.get("Country", pd.Series(dtype=str)).dropna().astype(str))]
+    if not available_countries:
+        available_countries = ["LT", "LV", "EE"]
+    selected = st.multiselect(
+        "Šalys",
+        options=available_countries,
+        default=available_countries,
+        format_func=lambda x: country_names.get(x, x),
+    )
+    search_customer = st.text_input("Kliento identifikatorius", value="")
+    st.markdown("<div class='side-card'><b>Ataskaitos data</b><br><span style='color:#b8c9df'>" + (latest_date.strftime("%Y-%m-%d") if pd.notna(latest_date) else "–") + f"</span><br><br><b>Aktyvios paskolos</b><br><span style='color:#b8c9df'>{len(latest):,}</span></div>", unsafe_allow_html=True)
+
+# Filtravimas pagal šalis
+if selected:
+    latest_f = latest[latest.get("Country", "").astype(str).isin(selected)].copy() if not latest.empty else latest.copy()
+    loans_f = loans[loans.get("Country", "").astype(str).isin(selected)].copy() if not loans.empty else loans.copy()
+    customers_f = customers[customers.get("Country", "").astype(str).isin(selected)].copy() if not customers.empty else customers.copy()
+else:
+    latest_f, loans_f, customers_f = latest.copy(), loans.copy(), customers.copy()
+
+# -------------------------
+# Pagalbiniai dabartiniai rodikliai
+# -------------------------
+def ead_share(mask):
+    denom = float(num(latest_f.get("EAD_EUR")).sum()) if not latest_f.empty else 0
+    return float(num(latest_f.loc[mask, "EAD_EUR"]).sum()) / denom if denom else 0
+
+
+stages = num(latest_f.get("IFRS9_Stage")) if not latest_f.empty else pd.Series(dtype=float)
+dpd = num(latest_f.get("DPD_Days")) if not latest_f.empty else pd.Series(dtype=float)
+pd_12 = num(latest_f.get("PD_12M")) if not latest_f.empty else pd.Series(dtype=float)
+ltv = num(latest_f.get("Current_LTV")) if not latest_f.empty else pd.Series(dtype=float)
+
+portfolio_ead = float(num(latest_f.get("EAD_EUR")).sum()) if not latest_f.empty else 0
+problem_share = ead_share(stages.eq(3)) if not latest_f.empty else 0
+higher_risk_share = ead_share(stages.eq(2)) if not latest_f.empty else 0
+late90_share = ead_share(dpd.ge(90)) if not latest_f.empty else 0
+avg_pd = float(pd_12.mean()) if not pd_12.dropna().empty else 0
+weighted_ltv = float((ltv * num(latest_f.get("EAD_EUR"))).sum() / portfolio_ead) if portfolio_ead else 0
+ecl = float(num(latest_f.get("ECL_EUR")).sum()) if not latest_f.empty else 0
+
+def status_high_worse(value, green, amber, red):
+    if value <= green: return "ŽALIA"
+    if value <= amber: return "GELTONA"
+    return "RAUDONA"
+
+# ============================================================
+# PUSLAPIAI
+# ============================================================
+page = st.sidebar.radio(
+    "Ataskaitos dalis",
+    ["Vadovybės apžvalga", "Kliento profilis", "Portfelio ir kreditavimo analizė", "Kredito rizika ir scenarijai"],
+)
+
+# ============================================================
+# 1. VADOVYBĖS APŽVALGA
+# ============================================================
+if page == "Vadovybės apžvalga":
+    st.title("Vadovybės kredito rizikos apžvalga")
+    st.caption(f"Ataskaitos data: {latest_date.strftime('%Y-%m-%d') if pd.notna(latest_date) else '–'} | Pasirinktos šalys: {', '.join(country_names.get(c,c) for c in selected) if selected else 'visos'}")
+
+    cols = st.columns(5)
+    with cols[0]: kpi("Paskolų portfelis", money(portfolio_ead), "dabartinis paskolų likutis", "blue")
+    with cols[1]: kpi("Probleminės paskolos", pct(problem_share), money(portfolio_ead * problem_share), "red" if problem_share > .03 else "amber")
+    with cols[2]: kpi("Padidėjusios rizikos paskolos", pct(higher_risk_share), money(portfolio_ead * higher_risk_share), "amber" if higher_risk_share > .06 else "green")
+    with cols[3]: kpi("Daugiau kaip 90 dienų vėlavimas", pct(late90_share), money(portfolio_ead * late90_share), "red" if late90_share > .02 else "amber")
+    with cols[4]: kpi("Prognozuojamas nuostolis", money(ecl), pct(ecl / portfolio_ead if portfolio_ead else 0), "red" if ecl / portfolio_ead > .02 else "green")
+
+    st.markdown("### Vadovybei svarbiausia")
+    alert_count = 0
+    if problem_share > .03:
+        alert("red", "Probleminių paskolų dalis viršija 3 %", f"Šiuo metu {money(portfolio_ead * problem_share)} paskolų likutis yra probleminis."); alert_count += 1
+    if higher_risk_share > .06:
+        alert("amber", "Daugėja paskolų, kurių kredito būklė pablogėjusi", f"Padidėjusios rizikos paskolos sudaro {pct(higher_risk_share)} portfelio."); alert_count += 1
+    if late90_share > .02:
+        alert("red", "Reikšminga vėluojančių mokėjimų koncentracija", f"Daugiau kaip 90 dienų vėluojančių paskolų dalis siekia {pct(late90_share)}."); alert_count += 1
+    if avg_pd > .04:
+        alert("red", "Vidutinė įsipareigojimų nevykdymo tikimybė aukšta", f"Vidutinė įsipareigojimų nevykdymo tikimybė siekia {pct(avg_pd)}."); alert_count += 1
+    if alert_count == 0:
+        alert("green", "Reikšmingų rizikos viršijimų nenustatyta", "Pagal testinių duomenų rodiklius portfelis šiuo metu neperžengia nustatytų pagrindinių rizikos ribų.")
+
+    q("Kaip keičiasi kredito portfelio kokybė?", "Vadovybei svarbu matyti, ar probleminių paskolų ir padidėjusios rizikos paskolų dalis auga, mažėja ar išlieka stabili.")
+    if not snap.empty and "Snapshot_Date" in snap.columns:
+        sf = snap[snap.get("Country", "").astype(str).isin(selected)].copy() if selected and "Country" in snap.columns else snap.copy()
+        sf["IFRS9_Stage"] = pd.to_numeric(sf["IFRS9_Stage"], errors="coerce")
+        monthly = sf.groupby("Snapshot_Date", as_index=False).agg(
+            Portfelis=("EAD_EUR", "sum"),
+            Padidėjusios_rizikos=("EAD_EUR", lambda x: float(x.sum())),
+        )
+        monthly["Probleminės paskolos"] = sf.groupby("Snapshot_Date")["EAD_EUR"].apply(lambda x: float(x[sf.loc[x.index, "IFRS9_Stage"].eq(3)].sum())).values
+        monthly["Padidėjusios rizikos paskolos"] = sf.groupby("Snapshot_Date")["EAD_EUR"].apply(lambda x: float(x[sf.loc[x.index, "IFRS9_Stage"].eq(2)].sum())).values
+        monthly["Probleminių dalis"] = monthly["Probleminės paskolos"] / monthly["Portfelis"]
+        monthly["Padidėjusios rizikos dalis"] = monthly["Padidėjusios rizikos paskolos"] / monthly["Portfelis"]
+        long = monthly.melt("Snapshot_Date", value_vars=["Probleminių dalis", "Padidėjusios rizikos dalis"], var_name="Rodiklis", value_name="Dalis")
+        long["Rodiklis"] = long["Rodiklis"].replace({"Probleminių dalis": "Probleminės paskolos", "Padidėjusios rizikos dalis": "Padidėjusios rizikos paskolos"})
+        fig = px.line(long, x="Snapshot_Date", y="Dalis", color="Rodiklis")
+        fig.update_yaxes(tickformat=".1%", title="Portfelio dalis")
+        fig.update_xaxes(title="Mėnuo")
+        st.plotly_chart(fig_style(fig, 380), use_container_width=True)
+
+    q("Kurioje šalyje šiuo metu didžiausia kredito rizika?", "Palyginame Baltijos šalis pagal paskolų dydį, probleminių paskolų dalį ir daugiau kaip 90 dienų vėlavimus.")
+    if "Country" in latest_f.columns and not latest_f.empty:
+        rows = []
+        for c, part in latest_f.groupby("Country"):
+            e = float(num(part.get("EAD_EUR")).sum())
+            stg = num(part.get("IFRS9_Stage"))
+            d = num(part.get("DPD_Days"))
+            p = num(part.get("PD_12M"))
+            rows.append({
+                "Šalis": country_names.get(c, c),
+                "Paskolų likutis": e,
+                "Portfelio dalis": e / portfolio_ead if portfolio_ead else 0,
+                "Probleminės paskolos": float((num(part.get("EAD_EUR"))[stg.eq(3)].sum()) / e) if e else 0,
+                "Padidėjusios rizikos paskolos": float((num(part.get("EAD_EUR"))[stg.eq(2)].sum()) / e) if e else 0,
+                "Daugiau kaip 90 dienų vėlavimas": float((num(part.get("EAD_EUR"))[d.ge(90)].sum()) / e) if e else 0,
+                "Vidutinė įsipareigojimų nevykdymo tikimybė": float(p.mean()) if not p.dropna().empty else 0,
+            })
+        country_df = pd.DataFrame(rows).sort_values("Probleminės paskolos", ascending=False)
+        c1, c2 = st.columns(2)
+        with c1:
+            fig = px.bar(country_df, x="Šalis", y="Paskolų likutis", text="Portfelio dalis")
+            fig.update_traces(texttemplate="%{text:.1%}", textposition="outside")
+            fig.update_yaxes(title="Paskolų likutis")
+            fig.update_xaxes(title="")
+            st.plotly_chart(fig_style(fig, 360), use_container_width=True)
+        with c2:
+            r = country_df.melt(id_vars="Šalis", value_vars=["Probleminės paskolos", "Padidėjusios rizikos paskolos", "Daugiau kaip 90 dienų vėlavimas"], var_name="Rodiklis", value_name="Dalis")
+            fig = px.bar(r, x="Šalis", y="Dalis", color="Rodiklis", barmode="group")
+            fig.update_yaxes(tickformat=".1%", title="Portfelio dalis")
+            fig.update_xaxes(title="")
+            st.plotly_chart(fig_style(fig, 360), use_container_width=True)
+        st.dataframe(
+            country_df.style.format({
+                "Paskolų likutis": lambda x: money(x),
+                "Portfelio dalis": lambda x: pct(x),
+                "Probleminės paskolos": lambda x: pct(x),
+                "Padidėjusios rizikos paskolos": lambda x: pct(x),
+                "Daugiau kaip 90 dienų vėlavimas": lambda x: pct(x),
+                "Vidutinė įsipareigojimų nevykdymo tikimybė": lambda x: pct(x, 2),
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    q("Kur banko rizika labiausiai susitelkusi?", "Didesnis ratas reiškia didesnę paskolų sumą, o aukštesnė padėtis reiškia didesnę probleminių paskolų dalį.")
+    if not latest_f.empty and "Product_Name" in latest_f.columns:
+        prod = latest_f.groupby("Product_Name", as_index=False).agg(Paskolų_likutis=("EAD_EUR", "sum"))
+        bad_by_prod = latest_f.assign(Probleminė=num(latest_f.get("IFRS9_Stage")).eq(3)).groupby("Product_Name", as_index=False)["Probleminė"].mean().rename(columns={"Probleminė":"Probleminių dalis"})
+        prod = prod.merge(bad_by_prod, on="Product_Name", how="left")
+        fig = px.scatter(prod, x="Paskolų_likutis", y="Probleminių dalis", size="Paskolų_likutis", hover_name="Product_Name")
+        fig.update_yaxes(tickformat=".1%", title="Probleminių paskolų dalis")
+        fig.update_xaxes(title="Paskolų likutis")
+        st.plotly_chart(fig_style(fig, 380), use_container_width=True)
+        st.markdown("<div class='note'>Viršutinėje dešinėje esančios kategorijos yra svarbiausios vadovybei: jos turi didelį portfelį ir kartu aukštą probleminių paskolų dalį.</div>", unsafe_allow_html=True)
+
+# ============================================================
+# 2. KLIENTO PROFILIS
+# ============================================================
+elif page == "Kliento profilis":
+    st.title("Kliento kredito profilis")
+    st.caption("Vieno kliento finansinė padėtis, paskolos, mokėjimų istorija ir aiškūs rizikos signalai.")
+    cid = search_customer.strip()
+    if not cid:
+        st.info("Kairėje įrašykite kliento identifikatorių. Testiniuose duomenyse galima naudoti reikšmes iš Customers lentelės.")
     else:
-        match=CUSTOMERS[CUSTOMERS["Customer_ID"].astype(str).str.strip().eq(search.strip()) | CUSTOMERS["Personal_Code"].astype(str).str.strip().eq(search.strip())]
-        if match.empty:
-            st.warning("Customer not found in selected countries.")
+        cust = customers[customers.get("Customer_ID", pd.Series(dtype=str)).astype(str).eq(cid)].copy()
+        if cust.empty:
+            cust = customers[customers.get("Personal_Code", pd.Series(dtype=str)).astype(str).eq(cid)].copy()
+        if cust.empty:
+            st.warning("Toks klientas testiniuose duomenyse nerastas.")
         else:
-            cust=match.iloc[0]; cid=cust["Customer_ID"]
-            cl=latest[latest["Customer_ID"].eq(cid)].copy()
-            if cl.empty:
-                st.warning("Customer found, but no active loan snapshot for the latest month.")
-            else:
-                st.subheader(f"Customer {cid} · {cust['Country']}")
-                x=st.columns(4)
-                x[0].metric("Total outstanding loans",fmt_eur(cl["EAD_EUR"].sum()))
-                x[1].metric("Number of loans",cl["Loan_ID"].nunique())
-                x[2].metric("Maximum days past due",f"{cl['DPD_Days'].max():.0f} d.")
-                x[3].metric("Expected credit loss",fmt_eur(cl["ECL_EUR"].sum()))
-                st.dataframe(cl[["Loan_ID","Product_Name","EAD_EUR","DPD_Days","ECL_EUR"]].rename(columns={"Loan_ID":"Loan","Product_Name":"Product","EAD_EUR":"Outstanding balance (EUR)","DPD_Days":"Days past due","ECL_EUR":"Expected credit loss (EUR)"}),hide_index=True,use_container_width=True)
-                hist=S[S["Customer_ID"].eq(cid)].groupby("Month",as_index=False)[["EAD_EUR","ECL_EUR"]].sum()
-                section("How has customer debt changed?", "Outstanding balances indicate whether debt is being repaid or increasing.")
-                plot(px.line(hist,x="Month",y="EAD_EUR",markers=True,title="Outstanding loan balance over time"))
-                f=D["Customer_Financials"].copy();f=f[f["Customer_ID"].eq(cid)].sort_values("Snapshot_Date")
-                if not f.empty:
-                    section("Can the customer afford debt payments?", "Monthly income is compared with debt payments; a higher payment-to-income ratio leaves a smaller financial buffer.")
-                    ff=f.melt(id_vars="Snapshot_Date",value_vars=["Monthly_Income_EUR","Debt_Service_EUR"],var_name="Indicator",value_name="EUR")
-                    ff["Indicator"]=ff["Indicator"].replace({"Monthly_Income_EUR":"Monthly income","Debt_Service_EUR":"Monthly debt payments"})
-                    plot(px.line(ff,x="Snapshot_Date",y="EUR",color="Indicator",title="Income and debt payments"))
-                pay=D["Payments"]
-                if not pay.empty and "Customer_ID" in pay.columns:
-                    pay=pay[pay["Customer_ID"].eq(cid)]
-                    if not pay.empty:
-                        st.subheader("Payment history")
-                        st.dataframe(pay.sort_values("Due_Date",ascending=False).head(30),hide_index=True,use_container_width=True)
+            c = cust.iloc[0]
+            csnap = snap[snap.get("Customer_ID", pd.Series(dtype=str)).astype(str).eq(str(c["Customer_ID"]))].copy()
+            if selected and "Country" in csnap.columns:
+                csnap = csnap[csnap["Country"].astype(str).isin(selected)]
+            latest_c = csnap[csnap["Snapshot_Date"].eq(csnap["Snapshot_Date"].max())].copy() if not csnap.empty else pd.DataFrame()
+            f = financials[financials.get("Customer_ID", pd.Series(dtype=str)).astype(str).eq(str(c["Customer_ID"]))].sort_values("Snapshot_Date") if not financials.empty else pd.DataFrame()
 
-elif page == "Risk Trends & Scenarios":
-    title("Risk Trends & Stress Scenarios", "Which loans deteriorate, how risk evolves and how economic shocks could affect losses.")
-    section("How much exposure became non-performing?", "Loans that were performing in the previous month but are non-performing now are counted as new inflows. This is an early management warning.")
-    ss=S.sort_values(["Loan_ID","Snapshot_Date"]).copy()
-    ss["Previous_Stage"]=ss.groupby("Loan_ID")["IFRS9_Stage"].shift(1)
-    new=ss[ss["IFRS9_Stage"].eq(3)&ss["Previous_Stage"].notna()&ss["Previous_Stage"].ne(3)]
-    inflow=new.groupby(["Month","Country"],as_index=False)["EAD_EUR"].sum()
-    if not inflow.empty:
-        plot(px.bar(inflow,x="Month",y="EAD_EUR",color="Country",color_discrete_map=COLORS,title="New non-performing loan inflows (EUR)"))
-    else: st.info("No new non-performing inflows in the selected period.")
-    section("Are newer loan vintages riskier?", "Non-performing exposure by origination year. Newer loans have had less time to deteriorate, so vintage comparisons should ideally use the same seasoning period.")
-    v=latest.copy();v["Origination year"]=pd.to_datetime(v["Origination_Date"],errors="coerce").dt.year
-    vg=v.groupby("Origination year",as_index=False)[["EAD_EUR","Problem_EAD"]].sum().dropna()
-    vg["Share"]=vg["Problem_EAD"]/vg["EAD_EUR"].replace(0,np.nan)
-    plot(px.bar(vg,x="Origination year",y="Share",title="Non-performing loan ratio by origination year"),percent=True)
-    section("How could losses increase under stress?", "This is a simplified sensitivity test using synthetic scenarios, not a regulatory capital stress test or an official IFRS 9 model.")
-    scenarios=D["Stress_Scenarios"].copy()
-    if not scenarios.empty and "Scenario" in scenarios.columns:
-        choice=st.selectbox("Economic scenario",scenarios["Scenario"].astype(str).tolist())
-        row=scenarios[scenarios["Scenario"].astype(str).eq(choice)].iloc[0]
-        pd_mult=float(pd.to_numeric(row.get("PD_Multiplier",1),errors="coerce"))
-        lgd_add=float(pd.to_numeric(row.get("LGD_Add",0),errors="coerce"))
-        ead_growth=float(pd.to_numeric(row.get("EAD_Growth_pct",0),errors="coerce"))
-        baseline=float(latest["ECL_EUR"].sum())
-        if {"PD_12M","LGD"}.issubset(latest.columns):
-            stressed=(latest["EAD_EUR"].fillna(0)*(1+ead_growth)*(latest["PD_12M"].fillna(0)*pd_mult).clip(0,1)*(latest["LGD"].fillna(0)+lgd_add).clip(0,1)).sum()
-            c1,c2,c3=st.columns(3)
-            c1.metric("Current expected credit losses",fmt_eur(baseline))
-            c2.metric("Scenario loss estimate",fmt_eur(stressed))
-            c3.metric("Change",fmt_eur(stressed-baseline))
-            st.caption("Note: this scenario uses one-year probability of default and is not directly comparable with accounting lifetime expected credit losses.")
-        else: st.warning("Insufficient probability-of-default or loss-given-default data for this scenario.")
+            st.markdown(f"### {c.get('Customer_ID','')} — {country_names.get(str(c.get('Country','')), str(c.get('Country','')))}")
+            cols = st.columns(5)
+            total_debt = float(num(latest_c.get("EAD_EUR")).sum()) if not latest_c.empty else 0
+            monthly_payment = float(num(f.get("Debt_Service_EUR")).iloc[-1]) if not f.empty and "Debt_Service_EUR" in f.columns else 0
+            annual_income = float(num(f.get("Annual_Income_EUR")).iloc[-1]) if not f.empty and "Annual_Income_EUR" in f.columns else float(c.get("Annual_Income_EUR", 0) or 0)
+            max_dpd = int(num(latest_c.get("DPD_Days")).max()) if not latest_c.empty and not num(latest_c.get("DPD_Days")).dropna().empty else 0
+            with cols[0]: kpi("Amžius", f"{int(c.get('Age',0))} m.", str(c.get("Gender","")), "blue")
+            with cols[1]: kpi("Metinės pajamos", money(annual_income), str(c.get("Employment_Status","")), "blue")
+            with cols[2]: kpi("Bendra paskolų suma", money(total_debt), f"{len(latest_c)} paskolų", "blue")
+            with cols[3]: kpi("Mėnesinės įmokos", money(monthly_payment), f"pajamų dalis {pct(monthly_payment*12/annual_income if annual_income else np.nan)}", "amber" if annual_income and monthly_payment*12/annual_income>.4 else "green")
+            with cols[4]: kpi("Didžiausias vėlavimas", f"{max_dpd} d.", "mokėjimo istorija", "red" if max_dpd>=90 else "amber" if max_dpd>=30 else "green")
 
-st.divider()
-st.caption("Baltic Bank · CRO management report · Synthetic test data · Analytics demonstration only; not regulatory reporting")
+            q("Kokia kliento finansinė padėtis?", "Šis grafikas parodo, ar pajamos ir skola juda klientui palankia ar nepalankia kryptimi.")
+            if not f.empty:
+                chart = f[[c for c in ["Snapshot_Date","Annual_Income_EUR","Total_Debt_EUR"] if c in f.columns]].copy()
+                long = chart.melt("Snapshot_Date", var_name="Rodiklis", value_name="Suma")
+                long["Rodiklis"] = long["Rodiklis"].replace({"Annual_Income_EUR":"Metinės pajamos", "Total_Debt_EUR":"Bendra skola"})
+                fig = px.line(long, x="Snapshot_Date", y="Suma", color="Rodiklis")
+                fig.update_yaxes(title="Eurais")
+                fig.update_xaxes(title="Mėnuo")
+                st.plotly_chart(fig_style(fig, 340), use_container_width=True)
+
+            q("Kodėl šis klientas laikomas rizikingu?", "Pateikiami tik tie signalai, kurie gali būti aktualūs kredito sprendimui.")
+            signals = 0
+            if max_dpd >= 90:
+                alert("red", "Klientas reikšmingai vėluoja mokėti", f"Didžiausias nustatytas vėlavimas – {max_dpd} dienos."); signals += 1
+            elif max_dpd >= 30:
+                alert("amber", "Kliento mokėjimai vėluoja", f"Didžiausias nustatytas vėlavimas – {max_dpd} dienos."); signals += 1
+            if annual_income and monthly_payment*12/annual_income > .5:
+                alert("red", "Didelė mėnesinių įmokų našta", f"Metinių paskolos įmokų ir pajamų santykis siekia {pct(monthly_payment*12/annual_income)}."); signals += 1
+            if not latest_c.empty and num(latest_c.get("IFRS9_Stage")).eq(3).any():
+                alert("red", "Bent viena paskola yra probleminė", "Tai reiškia, kad kredito rizika šiam klientui jau yra materializavusis."); signals += 1
+            if signals == 0:
+                alert("green", "Stiprių dabartinių rizikos signalų nenustatyta", "Pagal turimus testinius duomenis reikšmingų vėlavimų ar probleminių paskolų nėra.")
+
+            q("Kokias paskolas turi klientas?", "Visa kliento kredito pozicija vienoje lentelėje.")
+            if not latest_c.empty:
+                show = [c for c in ["Loan_ID","Product_Name","EAD_EUR","Interest_Rate","Current_LTV","DPD_Days","PD_12M","LGD","Country"] if c in latest_c.columns]
+                st.dataframe(latest_c[show], use_container_width=True, hide_index=True)
+
+# ============================================================
+# 3. PORTFELIO IR KREDITAVIMO ANALIZĖ
+# ============================================================
+elif page == "Portfelio ir kreditavimo analizė":
+    st.title("Portfelio ir kreditavimo analizė")
+    st.caption("Kas skolinasi, kada skolinasi, kiek įneša savo lėšų ir kurioms klientų grupėms bankas prisiima daugiausia rizikos?")
+
+    q("Kada klientai dažniausiai ima paskolas?", "Paskolų skaičius ir suteikta suma pagal mėnesį padeda matyti sezoniškumą ir kreditavimo tempą.")
+    if not loans_f.empty:
+        monthly = loans_f.dropna(subset=["Origination_Date"]).copy()
+        monthly["Mėnuo"] = monthly["Origination_Date"].dt.to_period("M").astype(str)
+        monthly = monthly.groupby("Mėnuo", as_index=False).agg(Naujų_paskolų_skaičius=("Loan_ID","nunique"), Suteikta_suma=("Original_Amount_EUR","sum"))
+        c1, c2 = st.columns(2)
+        with c1:
+            fig = px.bar(monthly, x="Mėnuo", y="Naujų_paskolų_skaičius")
+            fig.update_yaxes(title="Naujų paskolų skaičius")
+            fig.update_xaxes(title="Suteikimo mėnuo")
+            st.plotly_chart(fig_style(fig, 340), use_container_width=True)
+        with c2:
+            fig = px.line(monthly, x="Mėnuo", y="Suteikta_suma")
+            fig.update_yaxes(title="Suteikta suma, eurais")
+            fig.update_xaxes(title="Suteikimo mėnuo")
+            st.plotly_chart(fig_style(fig, 340), use_container_width=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        q("Kokio amžiaus klientai dažniausiai skolinasi?", "Padeda suprasti, kurios amžiaus grupės sudaro naujo kreditavimo srautą.")
+        if not customers_f.empty and "Age" in customers_f.columns:
+            x = customers_f.copy()
+            x["Amžiaus grupė"] = pd.cut(pd.to_numeric(x["Age"], errors="coerce"), bins=[17,24,34,44,54,64,200], labels=["18–24","25–34","35–44","45–54","55–64","65+"], include_lowest=True)
+            a = x.groupby("Amžiaus grupė", observed=False).size().reset_index(name="Klientų skaičius")
+            a["Amžiaus grupė"] = a["Amžiaus grupė"].astype(str)
+            fig = px.bar(a, x="Amžiaus grupė", y="Klientų skaičius")
+            fig.update_yaxes(title="Klientų skaičius")
+            st.plotly_chart(fig_style(fig, 320), use_container_width=True)
+    with c2:
+        q("Kas dažniau ima paskolas – moterys ar vyrai?", "Parodomas klientų pasiskirstymas pagal lytį; pagal poreikį vėliau galime susieti jį su rizika.")
+        if not customers_f.empty and "Gender" in customers_f.columns:
+            g = customers_f.groupby("Gender", as_index=False).size().rename(columns={"size":"Klientų skaičius"})
+            fig = px.pie(g, names="Gender", values="Klientų skaičius", hole=.60)
+            st.plotly_chart(fig_style(fig, 320), use_container_width=True)
+
+    q("Kokį pradinį įnašą klientai dažniausiai įneša?", "Mažesnis pradinis įnašas reiškia mažesnį kliento nuosavą finansinį rezervą ir dažniausiai didesnį banko finansavimo santykį.")
+    if not loans_f.empty and "Down_Payment_Pct" in loans_f.columns:
+        x = loans_f[pd.to_numeric(loans_f["Down_Payment_Pct"], errors="coerce").gt(0)].copy()
+        x["Pradinio įnašo grupė"] = pd.cut(pd.to_numeric(x["Down_Payment_Pct"], errors="coerce"), bins=[0,.1,.15,.2,.25,.3,.4,2], labels=["<10 %","10–15 %","15–20 %","20–25 %","25–30 %","30–40 %",">40 %"], right=False, include_lowest=True)
+        d = x.groupby("Pradinio įnašo grupė", observed=False).agg(Paskolų_skaičius=("Loan_ID","nunique"), Suteikta_suma=("Original_Amount_EUR","sum")).reset_index()
+        d["Pradinio įnašo grupė"] = d["Pradinio įnašo grupė"].astype(str)
+        st.plotly_chart(fig_style(px.bar(d, x="Pradinio įnašo grupė", y="Paskolų_skaičius", hover_data=["Suteikta_suma"]), 330), use_container_width=True)
+
+    q("Ar mažesnis pradinis įnašas susijęs su didesne kredito rizika?", "Lyginame pradinio įnašo dydį su vėliau probleminėmis tapusių paskolų dalimi.")
+    if not underwriting.empty and not snap.empty:
+        base = underwriting[["Loan_ID","Down_Payment_Pct"]].drop_duplicates("Loan_ID").copy()
+        bad = snap[snap["Snapshot_Date"].eq(snap["Snapshot_Date"].max())][["Loan_ID","IFRS9_Stage"]].drop_duplicates("Loan_ID").copy()
+        base = base.merge(bad, on="Loan_ID", how="left")
+        base["Down_Payment_Pct"] = pd.to_numeric(base["Down_Payment_Pct"], errors="coerce")
+        base["Probleminė"] = pd.to_numeric(base["IFRS9_Stage"], errors="coerce").eq(3)
+        base["Pradinio įnašo grupė"] = pd.cut(base["Down_Payment_Pct"], bins=[0,.1,.15,.2,.25,.3,.4,2], labels=["<10 %","10–15 %","15–20 %","20–25 %","25–30 %","30–40 %",">40 %"], right=False, include_lowest=True)
+        out = base.groupby("Pradinio įnašo grupė", observed=False)["Probleminė"].mean().reset_index(name="Probleminių paskolų dalis")
+        out["Pradinio įnašo grupė"] = out["Pradinio įnašo grupė"].astype(str)
+        fig = px.bar(out, x="Pradinio įnašo grupė", y="Probleminių paskolų dalis")
+        fig.update_yaxes(tickformat=".1%", title="Probleminių paskolų dalis")
+        st.plotly_chart(fig_style(fig, 340), use_container_width=True)
+
+    q("Kaip skiriasi skolinimasis tarp Lietuvos, Latvijos ir Estijos?", "Tai padeda vadovybei matyti ne tik portfelio dydį, bet ir klientų struktūros skirtumus tarp šalių.")
+    if not loans_f.empty:
+        country_loan = loans_f.groupby("Country", as_index=False).agg(
+            Paskolų_skaičius=("Loan_ID","nunique"),
+            Suteikta_suma=("Original_Amount_EUR","sum"),
+            Vidutinė_paskola=("Original_Amount_EUR","mean"),
+            Vidutinis_pradinis_įnašas=("Down_Payment_Pct","mean"),
+        )
+        country_loan["Šalis"] = country_loan["Country"].map(country_names).fillna(country_loan["Country"])
+        country_loan["Vidutinis_pradinis_įnašas"] = country_loan["Vidutinis_pradinis_įnašas"] * 100
+        st.dataframe(country_loan[["Šalis","Paskolų_skaičius","Suteikta_suma","Vidutinė_paskola","Vidutinis_pradinis_įnašas"]], use_container_width=True, hide_index=True, column_config={"Suteikta_suma":st.column_config.NumberColumn(format="%.0f €"), "Vidutinė_paskola":st.column_config.NumberColumn(format="%.0f €"), "Vidutinis_pradinis_įnašas":st.column_config.NumberColumn(format="%.1f%%")})
+
+# ============================================================
+# 4. KREDITŲ RIZIKA IR SCENARIJAI
+# ============================================================
+else:
+    st.title("Kredito rizika ir scenarijai")
+    st.caption("Klausimas: kur rizika kaupiasi, kas jau blogėja ir kokių nuostolių galime tikėtis nepalankiu atveju?")
+
+    q("Kurios paskolos turi didžiausią riziką?", "Vertiname ne tik rizikos procentą, bet ir pinigų sumą, kurią bankas yra paskolinęs.")
+    if not latest_f.empty:
+        rr = latest_f.copy()
+        rr["Rizikos rodiklis"] = (
+            pd.to_numeric(rr.get("PD_12M"), errors="coerce").fillna(0).rank(pct=True) * 0.45
+            + pd.to_numeric(rr.get("Current_LTV"), errors="coerce").fillna(0).rank(pct=True) * 0.20
+            + pd.to_numeric(rr.get("DPD_Days"), errors="coerce").fillna(0).clip(0, 180).rank(pct=True) * 0.35
+        )
+        show = [c for c in ["Loan_ID","Customer_ID","Product_Name","EAD_EUR","PD_12M","Current_LTV","DPD_Days","Country"] if c in rr.columns]
+        st.dataframe(rr.nlargest(20,"Rizikos rodiklis")[show], use_container_width=True, hide_index=True)
+
+    q("Ar paskolų kokybė blogėja?", "Parodome, kiek paskolų per kiekvieną mėnesį tapo problemiškesnėmis ir kiek jų grįžo į geresnę būklę.")
+    if not loan_events.empty:
+        ev = loan_events.copy()
+        if selected and "Country" in ev.columns: ev = ev[ev["Country"].astype(str).isin(selected)]
+        ev["Event_Date"] = pd.to_datetime(ev.get("Event_Date"), errors="coerce")
+        month_ev = ev.dropna(subset=["Event_Date"]).assign(Mėnuo=lambda x: x["Event_Date"].dt.to_period("M").astype(str)).groupby(["Mėnuo","Event_Type"], as_index=False).size().rename(columns={"size":"Įvykių skaičius"})
+        fig = px.bar(month_ev, x="Mėnuo", y="Įvykių skaičius", color="Event_Type", barmode="stack")
+        fig.update_xaxes(title="Mėnuo"); fig.update_yaxes(title="Įvykių skaičius")
+        st.plotly_chart(fig_style(fig, 350), use_container_width=True)
+
+    q("Ar naujesnės paskolos yra rizikingesnės?", "Palyginame paskolų suteikimo metus ir šiandieninę probleminių paskolų dalį.")
+    if not loans_f.empty and not latest_f.empty:
+        a = loans_f[["Loan_ID","Origination_Date"]].drop_duplicates("Loan_ID").copy()
+        a["Suteikimo metai"] = pd.to_datetime(a["Origination_Date"], errors="coerce").dt.year
+        b = latest_f[["Loan_ID","IFRS9_Stage"]].drop_duplicates("Loan_ID").copy()
+        b["Probleminė"] = pd.to_numeric(b["IFRS9_Stage"], errors="coerce").eq(3)
+        v = a.merge(b, on="Loan_ID", how="left").dropna(subset=["Suteikimo metai"])
+        v = v.groupby("Suteikimo metai", as_index=False)["Probleminė"].mean().rename(columns={"Probleminė":"Probleminių paskolų dalis"})
+        fig = px.bar(v, x="Suteikimo metai", y="Probleminių paskolų dalis")
+        fig.update_yaxes(tickformat=".1%", title="Probleminių paskolų dalis")
+        st.plotly_chart(fig_style(fig, 330), use_container_width=True)
+
+    q("Ar užstatas pakankamai apsaugo banką?", "Didėjanti paskolos ir užstato vertės dalis reiškia mažesnį banko apsaugos rezervą.")
+    if not latest_f.empty and "Current_LTV" in latest_f.columns:
+        x = latest_f.copy(); x["Current_LTV"] = pd.to_numeric(x["Current_LTV"], errors="coerce")
+        bins=[0,.6,.7,.8,.9,1,10]; labels=["<60 %","60–70 %","70–80 %","80–90 %","90–100 %",">100 %"]
+        x["Užstato padengimo grupė"] = pd.cut(x["Current_LTV"], bins=bins, labels=labels, right=False, include_lowest=True)
+        ltvc = x.groupby("Užstato padengimo grupė", observed=False).agg(Paskolų_likutis=("EAD_EUR","sum"), Paskolų_skaičius=("Loan_ID","nunique")).reset_index()
+        ltvc["Užstato padengimo grupė"] = ltvc["Užstato padengimo grupė"].astype(str)
+        fig = px.bar(ltvc, x="Užstato padengimo grupė", y="Paskolų_likutis", hover_data=["Paskolų_skaičius"])
+        fig.update_xaxes(title="Paskolos ir užstato vertės santykis")
+        fig.update_yaxes(title="Paskolų likutis")
+        st.plotly_chart(fig_style(fig, 340), use_container_width=True)
+
+    q("Kas nutiktų, jei kredito rizika padidėtų?", "Testinis scenarijus parodo papildomo prognozuojamo nuostolio dydį, jei įsipareigojimų nevykdymo tikimybė padidėtų.")
+    scenario = st.selectbox("Scenarijus", ["Nedidelis pablogėjimas", "Vidutinis pablogėjimas", "Stiprus pablogėjimas"])
+    shock = {"Nedidelis pablogėjimas":0.15, "Vidutinis pablogėjimas":0.30, "Stiprus pablogėjimas":0.50}[scenario]
+    stress = latest_f.copy()
+    stress["Papildomas prognozuojamas nuostolis"] = num(stress.get("EAD_EUR")) * num(stress.get("LGD"), .45).fillna(.45) * num(stress.get("PD_12M"), .02).fillna(.02) * shock
+    stress_loss = float(stress["Papildomas prognozuojamas nuostolis"].sum()) if not stress.empty else 0
+    c1,c2,c3=st.columns(3)
+    with c1: kpi("Scenarijus", scenario, "įsipareigojimų nevykdymo tikimybės šokas", "amber")
+    with c2: kpi("Papildomas nuostolis", money(stress_loss), "pagal testinį scenarijų", "red")
+    with c3: kpi("Nuostolis nuo portfelio", pct(stress_loss/portfolio_ead if portfolio_ead else 0), "nuo dabartinio paskolų likučio", "red")
+    if not stress.empty:
+        q("Kurios paskolos labiausiai paveiktų banką?", "Pateikiamos pozicijos, kurioms scenarijus sugeneruotų didžiausią papildomą nuostolį.")
+        cols = [c for c in ["Loan_ID","Customer_ID","Product_Name","Country","EAD_EUR","PD_12M","LGD","Papildomas prognozuojamas nuostolis"] if c in stress.columns]
+        st.dataframe(stress.nlargest(15,"Papildomas prognozuojamas nuostolis")[cols], use_container_width=True, hide_index=True)
