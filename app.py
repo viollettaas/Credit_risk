@@ -271,105 +271,103 @@ elif page == "Customer Profile":
                         st.dataframe(pay.sort_values("Due_Date",ascending=False).head(30),hide_index=True,use_container_width=True)
 
 elif page == "Risk Trends & Scenarios":
-    title("Risk Trends & Stress Scenarios", "A forward-looking management view of credit quality, projected losses, lending income and resilience.")
-    st.caption("All forecasts and earnings estimates below are illustrative sensitivities based on synthetic loan-level data, not regulatory forecasts or audited financial results.")
+    title("Risk Trends & Stress Scenarios", "Five clear risk monitoring views and one simple scenario comparison for management.")
+    st.caption("Synthetic bank data. Historical indicators are calculated from the Excel workbook; stress outcomes are illustrative sensitivities, not validated forecasts.")
 
-    history = monthly(S)
-    current_ratio = ratio(latest["Problem_EAD"].sum(), latest["EAD_EUR"].sum())
-    section("1 | How might credit quality develop over the next 12 months?", "Three transparent illustrative paths extend the latest observed non-performing loan ratio. These are scenario assumptions, not statistical forecasts.")
-    forecast = []
-    last_month = pd.Timestamp(LATEST_DATE).to_period("M").to_timestamp()
-    for month_ahead in range(13):
-        dt = last_month + pd.DateOffset(months=month_ahead)
-        for name, annual_change in [("Base", -0.01), ("Adverse", 0.04), ("Severe", 0.10)]:
-            forecast.append({"Month": dt, "Scenario": name, "Non-performing loan ratio": max(0, min(1, current_ratio + annual_change * month_ahead / 12))})
-    fcast = pd.DataFrame(forecast)
-    plot(px.line(fcast, x="Month", y="Non-performing loan ratio", color="Scenario", markers=True, title="Illustrative non-performing loan ratio paths"), 380, percent=True)
+    # Identify consecutive monthly status transitions at loan level.
+    history = S.sort_values(["Loan_ID", "Snapshot_Date"]).copy()
+    history["Previous stage"] = history.groupby("Loan_ID")["IFRS9_Stage"].shift()
+    history["Previous month"] = history.groupby("Loan_ID")["Month"].shift()
+    consecutive = (history["Previous month"].notna() &
+                   ((history["Month"].dt.year - history["Previous month"].dt.year) * 12 +
+                    history["Month"].dt.month - history["Previous month"].dt.month).eq(1))
+    new_problem = history[consecutive & history["IFRS9_Stage"].eq(3) & history["Previous stage"].ne(3)].copy()
+    exited_problem = history[consecutive & history["Previous stage"].eq(3) & history["IFRS9_Stage"].ne(3)].copy()
 
-    section("2 | What happens to losses and lending income under stress?", "The interest-income estimate uses outstanding exposure multiplied by contractual interest rates. Funding and operating costs are adjustable assumptions, not actual accounting data.")
-    scenarios = D["Stress_Scenarios"].copy()
-    scenario_names = scenarios["Scenario"].astype(str).tolist()
-    scenario = st.selectbox("Economic scenario", scenario_names, key="scenario_choice")
-    scenario_row = scenarios.loc[scenarios["Scenario"].astype(str).eq(scenario)].iloc[0]
-    c1,c2,c3,c4 = st.columns(4)
-    with c1:
-        rate_shock = st.slider("Interest rate shock (percentage points)", -2.0, 5.0, float(scenario_row.get("EURIBOR_Shock_pp", 0)), 0.25)
-    with c2:
-        unemployment = st.slider("Unemployment increase (percentage points)", 0.0, 8.0, max(0.0, float(scenario_row.get("Unemployment_Shock_pp", 0))), 0.5)
-    with c3:
-        property_change = st.slider("Property price change (%)", -40, 10, int(round(100 * float(scenario_row.get("House_Price_Shock_pct", 0)))), 5)
-    with c4:
-        default_increase = st.slider("Default probability increase (%)", 0, 150, int(round(100 * (float(scenario_row.get("PD_Multiplier", 1)) - 1))), 5)
-    with st.expander("Earnings assumptions (illustrative; not supplied by the workbook)"):
-        funding_cost = st.slider("Annual funding cost on outstanding exposure (%)", 0.0, 8.0, 2.5, 0.25)
-        operating_cost = st.slider("Annual operating cost on outstanding exposure (%)", 0.0, 5.0, 1.0, 0.25)
-        repricing_share = st.slider("Share of loan exposure repricing with market rates (%)", 0, 100, 60, 5) / 100
-    exposure = latest["EAD_EUR"].fillna(0).clip(lower=0)
-    interest = pd.to_numeric(latest["Interest_Rate"], errors="coerce").fillna(0).clip(lower=0)
-    pd_base = pd.to_numeric(latest.get("PD_12M", pd.Series(0, index=latest.index)), errors="coerce").fillna(0).clip(0,1)
-    lgd_base = pd.to_numeric(latest.get("LGD", pd.Series(0, index=latest.index)), errors="coerce").fillna(0).clip(0,1)
-    ltv = pd.to_numeric(latest.get("Current_LTV", pd.Series(np.nan, index=latest.index)), errors="coerce")
-    # This is a sensitivity proxy; it does not claim to be a validated macro-credit model.
-    macro_pd_factor = 1 + default_increase / 100 + unemployment * 0.04
-    price_lgd_add = max(0, -property_change) / 100 * 0.15
-    stressed_pd = (pd_base * macro_pd_factor).clip(0,1)
-    stressed_lgd = (lgd_base + price_lgd_add * ltv.fillna(0).clip(0,2)).clip(0,1)
-    loan_loss = exposure * stressed_pd * stressed_lgd
-    base_loss = exposure * pd_base * lgd_base
-    gross_interest = float((exposure * interest).sum())
-    stressed_interest = float((exposure * (interest + rate_shock / 100 * repricing_share).clip(lower=0)).sum())
-    annual_funding = float(exposure.sum()) * funding_cost / 100
-    annual_operating = float(exposure.sum()) * operating_cost / 100
-    net_interest = stressed_interest - annual_funding
-    risk_income = net_interest - float(loan_loss.sum()) - annual_operating
-    cols = st.columns(4)
-    cols[0].metric("Projected 12-month credit loss proxy", fmt_eur(float(loan_loss.sum())))
-    cols[1].metric("Estimated annual net interest income", fmt_eur(net_interest))
-    cols[2].metric("Income after credit and operating costs", fmt_eur(risk_income))
-    cols[3].metric("Additional loss vs baseline proxy", fmt_eur(float(loan_loss.sum()-base_loss.sum())))
-    profit_df = pd.DataFrame({"Measure": ["Estimated net interest income", "Estimated credit losses", "Estimated operating costs", "Residual income proxy"], "EUR": [net_interest, -float(loan_loss.sum()), -annual_operating, risk_income]})
-    plot(px.bar(profit_df, x="Measure", y="EUR", color="Measure", title="Annual earnings bridge components (EUR)"), 390)
-    st.caption("The earnings proxy excludes fees, taxes, hedging, balance-sheet funding details and capital costs. Twelve-month default probability × loss given default is not equivalent to booked lifetime expected credit losses.")
+    section("1 | How much exposure became non-performing?", "Outstanding balances of loans that moved from performing to non-performing during the month. This shows new credit-quality deterioration.")
+    inflows = new_problem.groupby(["Month", "Country"], as_index=False)["EAD_EUR"].sum()
+    if not inflows.empty:
+        fig = px.bar(inflows, x="Month", y="EAD_EUR", color="Country", color_discrete_map=COLORS,
+                     title="New non-performing loan inflows (EUR)", barmode="stack")
+        fig.update_yaxes(title="Exposure (EUR)")
+        plot(fig, 385)
+    else:
+        st.info("No new non-performing transitions were observed.")
 
-    section("3 | Which products and countries contribute most to projected losses?", "Absolute losses highlight where the largest amounts are at risk; loss rates help compare portfolios of different sizes.")
-    breakdown = latest[["Country", "Product_Name", "EAD_EUR"]].copy()
-    breakdown["Projected loss"] = loan_loss.to_numpy()
-    product_loss = breakdown.groupby("Product_Name", as_index=False)[["Projected loss", "EAD_EUR"]].sum().sort_values("Projected loss", ascending=False)
-    product_loss["Loss rate"] = product_loss["Projected loss"] / product_loss["EAD_EUR"].replace(0,np.nan)
-    left,right = st.columns(2)
+    section("2 | Are more loans deteriorating than improving?", "Monthly counts of loans entering non-performing status versus loans exiting it. Exiting this status does not necessarily mean that cash has been recovered.")
+    entered = new_problem.groupby("Month")["Loan_ID"].nunique().rename("Became non-performing")
+    exited = exited_problem.groupby("Month")["Loan_ID"].nunique().rename("Exited non-performing status")
+    transitions = pd.concat([entered, exited], axis=1).fillna(0).reset_index().sort_values("Month")
+    if not transitions.empty:
+        long = transitions.melt(id_vars="Month", var_name="Movement", value_name="Number of loans")
+        fig = px.bar(long, x="Month", y="Number of loans", color="Movement", barmode="group",
+                     title="New non-performing vs loans exiting non-performing status")
+        plot(fig, 355)
+    else:
+        st.info("No status transitions are available for the selected countries.")
+
+    section("3 | How severe are current payment delays?", "Outstanding balances by days past due. The distribution highlights early payment problems as well as severe arrears.")
+    delays = latest.copy()
+    days = pd.to_numeric(delays["DPD_Days"], errors="coerce")
+    delay_labels = ["No delay", "1–30 days", "31–60 days", "61–90 days", "Over 90 days"]
+    delays["Payment delay"] = pd.cut(days, bins=[-float("inf"), 0, 30, 60, 90, float("inf")], labels=delay_labels)
+    delay_data = delays.groupby("Payment delay", observed=False)["EAD_EUR"].sum().reindex(delay_labels).fillna(0).reset_index()
+    fig = px.bar(delay_data, x="Payment delay", y="EAD_EUR", title="Outstanding loans by payment delay")
+    fig.update_yaxes(title="Exposure (EUR)")
+    plot(fig, 355)
+
+    section("4 | Which countries have the highest expected credit losses?", "Compare both the amount of expected losses and their share of outstanding loans. A larger country may have higher absolute losses without having a higher loss rate.")
+    country_losses = latest.groupby("Country", as_index=False).agg(Exposure=("EAD_EUR", "sum"), Expected_losses=("ECL_EUR", "sum"))
+    country_losses["Loss rate"] = country_losses["Expected_losses"] / country_losses["Exposure"].replace(0, np.nan)
+    left, right = st.columns(2)
     with left:
-        plot(px.bar(product_loss, x="Product_Name", y="Projected loss", title="Projected loss by lending product"), 380)
+        fig = px.bar(country_losses, x="Country", y="Expected_losses", color="Country", color_discrete_map=COLORS,
+                     title="Expected credit losses by country (EUR)")
+        plot(fig, 340)
     with right:
-        country_loss = breakdown.groupby("Country", as_index=False)[["Projected loss", "EAD_EUR"]].sum()
-        country_loss["Loss rate"] = country_loss["Projected loss"] / country_loss["EAD_EUR"].replace(0,np.nan)
-        plot(px.bar(country_loss, x="Country", y="Loss rate", color="Country", color_discrete_map=COLORS, title="Projected loss rate by country"), 380, percent=True)
-    st.dataframe(product_loss.rename(columns={"Product_Name":"Lending product", "EAD_EUR":"Outstanding exposure (EUR)", "Projected loss":"Projected loss (EUR)"}).style.format({"Outstanding exposure (EUR)":"{:,.0f}","Projected loss (EUR)":"{:,.0f}","Loss rate":"{:.2%}"}), use_container_width=True, hide_index=True)
+        fig = px.bar(country_losses, x="Country", y="Loss rate", color="Country", color_discrete_map=COLORS,
+                     title="Expected credit losses / exposure")
+        plot(fig, 340, percent=True)
 
-    section("4 | Is loan growth followed by credit deterioration?", "New loan originations are compared with new non-performing exposures. They are different measures, so separate charts avoid misleading comparisons.")
-    orig = LOANS.copy()
-    orig["Month"] = pd.to_datetime(orig["Origination_Date"], errors="coerce").dt.to_period("M").dt.to_timestamp()
-    originations = orig.groupby("Month", as_index=False)["Original_Amount_EUR"].sum().rename(columns={"Original_Amount_EUR":"New lending (EUR)"})
-    ss = S.sort_values(["Loan_ID","Snapshot_Date"]).copy()
-    ss["Previous stage"] = ss.groupby("Loan_ID")["IFRS9_Stage"].shift()
-    inflows = ss.loc[ss["IFRS9_Stage"].eq(3) & ss["Previous stage"].notna() & ss["Previous stage"].ne(3)].groupby("Month",as_index=False)["EAD_EUR"].sum().rename(columns={"EAD_EUR":"New non-performing exposure (EUR)"})
-    c1,c2 = st.columns(2)
-    with c1: plot(px.bar(originations, x="Month", y="New lending (EUR)", title="Monthly new lending"), 350)
-    with c2:
-        if not inflows.empty: plot(px.bar(inflows, x="Month", y="New non-performing exposure (EUR)", title="Monthly inflows into non-performing status"), 350)
-        else: st.info("No new non-performing transitions were observed.")
-    st.caption("A causal relationship cannot be inferred from these two charts alone. Vintage analysis should compare loans at equivalent months since origination.")
+    section("5 | Is credit risk growing faster than the loan portfolio?", "Both series start at 100 in the first month with positive exposure. A faster increase in non-performing exposure signals worsening portfolio quality.")
+    growth = S.groupby("Month", as_index=False)[["EAD_EUR", "Problem_EAD"]].sum().sort_values("Month")
+    if not growth.empty:
+        base_total = growth.loc[growth["EAD_EUR"].gt(0), "EAD_EUR"]
+        base_problem = growth.loc[growth["Problem_EAD"].gt(0), "Problem_EAD"]
+        if not base_total.empty and not base_problem.empty:
+            growth["Loan portfolio"] = 100 * growth["EAD_EUR"] / base_total.iloc[0]
+            growth["Non-performing exposure"] = 100 * growth["Problem_EAD"] / base_problem.iloc[0]
+            growth_long = growth.melt(id_vars="Month", value_vars=["Loan portfolio", "Non-performing exposure"],
+                                     var_name="Indicator", value_name="Index")
+            fig = px.line(growth_long, x="Month", y="Index", color="Indicator", markers=True,
+                          title="Loan portfolio vs non-performing exposure (index)")
+            fig.update_yaxes(title="Index (starting level = 100)")
+            plot(fig, 370)
+        else:
+            st.info("Insufficient non-performing exposure history for an indexed comparison.")
 
-    section("5 | How resilient is risk-adjusted lending income across the Baltics?", "Compare each country's annualised interest income after illustrative funding costs and scenario credit losses. This is not reported bank profitability.")
-    country_income = latest[["Country", "EAD_EUR", "Interest_Rate"]].copy()
-    country_income["Gross interest income"] = exposure.to_numpy() * (interest + rate_shock/100 * repricing_share).clip(lower=0).to_numpy()
-    country_income["Credit loss"] = loan_loss.to_numpy()
-    country_income["Funding cost"] = exposure.to_numpy() * funding_cost / 100
-    country_income["Operating cost"] = exposure.to_numpy() * operating_cost / 100
-    ct = country_income.groupby("Country", as_index=False)[["Gross interest income", "Credit loss", "Funding cost", "Operating cost"]].sum()
-    ct["Risk-adjusted income proxy"] = ct["Gross interest income"] - ct["Funding cost"] - ct["Operating cost"] - ct["Credit loss"]
-    plot(px.bar(ct, x="Country", y="Risk-adjusted income proxy", color="Country", color_discrete_map=COLORS, title="Risk-adjusted annual income proxy by country"), 370)
-    st.dataframe(ct.style.format({c:"{:,.0f}" for c in ct.columns if c != "Country"}), use_container_width=True, hide_index=True)
-    st.info("Management interpretation: assess whether projected credit losses are adequately compensated by lending income, identify stressed countries and products, and prioritise targeted risk actions. Scenario outcomes are sensitivity estimates, not validated forecasts.")
+    section("6 | How could expected credit losses change under stress?", "A simple comparison of Base, Adverse and Severe assumptions. Uses loan-level exposure, 12-month default probability and loss given default; this is not a regulatory stress test or an accounting impairment forecast.")
+    scenario_df = D["Stress_Scenarios"].copy()
+    exposure = pd.to_numeric(latest["EAD_EUR"], errors="coerce").fillna(0).clip(lower=0)
+    probability = pd.to_numeric(latest.get("PD_12M", pd.Series(0, index=latest.index)), errors="coerce").fillna(0).clip(0, 1)
+    loss_fraction = pd.to_numeric(latest.get("LGD", pd.Series(0, index=latest.index)), errors="coerce").fillna(0).clip(0, 1)
+    scenario_rows = []
+    for _, r in scenario_df.iterrows():
+        name = str(r.get("Scenario", "Scenario"))
+        multiplier = float(pd.to_numeric(r.get("PD_Multiplier", 1), errors="coerce"))
+        extra_lgd = float(pd.to_numeric(r.get("LGD_Add", 0), errors="coerce"))
+        ead_growth = float(pd.to_numeric(r.get("EAD_Growth_pct", 0), errors="coerce"))
+        expected = (exposure * max(0, 1 + ead_growth) * (probability * max(0, multiplier)).clip(0, 1) *
+                    (loss_fraction + extra_lgd).clip(0, 1)).sum()
+        scenario_rows.append({"Scenario": name, "Illustrative 12-month credit losses (EUR)": float(expected)})
+    scenario_results = pd.DataFrame(scenario_rows)
+    if not scenario_results.empty:
+        fig = px.bar(scenario_results, x="Scenario", y="Illustrative 12-month credit losses (EUR)",
+                     title="Expected credit losses under economic scenarios")
+        plot(fig, 345)
+        st.dataframe(scenario_results.style.format({"Illustrative 12-month credit losses (EUR)": "€{:,.0f}"}),
+                     use_container_width=True, hide_index=True)
+    st.caption("Method: exposure × stressed 12-month probability of default × stressed loss given default. These model sensitivities are not directly comparable with booked lifetime expected credit losses.")
 
 st.divider()
 st.caption("Baltic Bank · CRO management report · Synthetic test data · Analytics demonstration only; not regulatory reporting")
