@@ -10,7 +10,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Baltic Bank | Credit Risk Management", page_icon="🏦", layout="wide", initial_sidebar_state="expanded")
 ROOT = Path(__file__).resolve().parent
-EXCEL_NAME = "credit_risk_test_data_baltic.xlsx"
+EXCEL_NAME = "credit_risk_test_data_baltic (3).xlsx"
 COUNTRIES = {"LT": "Lithuania", "LV": "Latvia", "EE": "Estonia", "Lietuva": "Lithuania", "Latvija": "Latvia", "Estija": "Estonia", "Lithuania": "Lithuania", "Latvia": "Latvia", "Estonia": "Estonia"}
 COLORS = {"Lithuania": "#1468C7", "Latvia": "#00A6A0", "Estonia": "#F4A340"}
 PAGES = ["Executive Overview", "Baltic Country Risk", "Portfolio & Borrowers", "Customer Profile", "Risk Trends & Scenarios"]
