@@ -23,8 +23,8 @@ section[data-testid="stSidebar"] [data-baseweb="select"] *,section[data-testid="
 h1,h2,h3{color:#0A213C!important;letter-spacing:-.035em}
 h1{font-size:2.1rem!important}h2{font-size:1.45rem!important}
 [data-testid="stMetric"]{background:white;border:1px solid #E4EAF2;border-radius:16px;padding:16px 18px;box-shadow:0 4px 18px #0A27400B}
-[data-testid="stMetricLabel"]{font-size:.86rem!important;color:#60758F!important}
-[data-testid="stMetricValue"]{font-size:1.55rem!important;color:#0B2E57!important}
+[data-testid="stMetricLabel"]{font-size:.9rem!important;color:#60758F!important} [data-testid="stMetricLabel"] p{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;line-height:1.3!important}
+[data-testid="stMetricValue"]{font-size:1.55rem!important;color:#0B2E57!important} [data-testid="stMetricValue"]>div{overflow:visible!important;text-overflow:clip!important;white-space:normal!important}
 [data-testid="stPlotlyChart"]{background:#fff;border:1px solid #E7EDF5;border-radius:15px;padding:6px}
 div[data-testid="stAlert"]{border-radius:12px}
 .note{padding:13px 16px;background:#EFF5FC;border-left:3px solid #2276CE;border-radius:8px;color:#35506E;margin:5px 0 18px}
@@ -121,7 +121,7 @@ if latest.empty:
     st.warning("No observations for selected countries at the latest reporting date.")
     st.stop()
 
-fmt_eur = lambda x: f"{x/1e6:,.2f} million EUR".replace(",", " ") if abs(x)>=1e6 else f"{x:,.0f} €".replace(",", " ")
+fmt_eur = lambda x: f"€{x/1e9:,.2f}bn" if abs(x)>=1e9 else (f"€{x/1e6:,.2f}m" if abs(x)>=1e6 else f"€{x:,.0f}")
 fmt_pct = lambda x: f"{100*x:.1f} %" if pd.notna(x) else "–"
 ratio = lambda a,b: float(a/b) if b else 0.0
 
@@ -151,9 +151,11 @@ def country_table(df):
 
 def kpis(df):
     exposure=df["EAD_EUR"].sum(); problem=df["Problem_EAD"].sum(); elevated=df["Elevated_EAD"].sum(); late=df["Late90_EAD"].sum(); loss=df["ECL_EUR"].sum()
-    cols=st.columns(5)
-    for col, label, value in zip(cols,["Loan portfolio", "Non-performing loans", "Loans with increased credit risk", "Loans at least 90 days past due", "Expected credit losses"],[fmt_eur(exposure),fmt_pct(ratio(problem,exposure)),fmt_pct(ratio(elevated,exposure)),fmt_pct(ratio(late,exposure)),fmt_eur(loss)]):
-        col.metric(label,value)
+    metrics = list(zip(["Loan portfolio", "Non-performing loans", "Loans with increased credit risk", "Loans at least 90 days past due", "Expected credit losses"], [fmt_eur(exposure),fmt_pct(ratio(problem,exposure)),fmt_pct(ratio(elevated,exposure)),fmt_pct(ratio(late,exposure)),fmt_eur(loss)]))
+    first = st.columns(3, gap="medium")
+    second = st.columns(3, gap="medium")
+    for col, (label, value) in zip(first + second, metrics):
+        col.metric(label, value)
 
 def monthly(df):
     g=df.groupby("Month",as_index=False)[["EAD_EUR","Problem_EAD","Elevated_EAD","Late90_EAD","ECL_EUR"]].sum().sort_values("Month")
@@ -215,7 +217,8 @@ elif page == "Portfolio & Borrowers":
         plot(px.bar(ag,x="Age group",y="Customers",title="Borrower age distribution"))
     with b:
         section("What is the borrower gender distribution?", "This describes borrower composition, not creditworthiness. Gender must not be used for discriminatory credit decisions.")
-        sex=CUSTOMERS["Gender"].fillna("Not specified").value_counts().reset_index();sex.columns=["Gender","Customers"]
+        gender_en = {"Moteris":"Female", "Vyras":"Male", "moteris":"Female", "vyras":"Male", "Female":"Female", "Male":"Male", "F":"Female", "M":"Male"}
+        sex=CUSTOMERS["Gender"].fillna("Not specified").astype(str).str.strip().replace(gender_en).value_counts().reset_index();sex.columns=["Gender","Customers"]
         plot(px.pie(sex,names="Gender",values="Customers",hole=.55,title="Borrower distribution"))
     section("How much equity do borrowers contribute?", "Only loans with meaningful down-payment data are included. The contribution is measured as a share of purchase price.")
     d=l.copy();d["Down_Payment_Pct"]=pd.to_numeric(d["Down_Payment_Pct"],errors="coerce")
